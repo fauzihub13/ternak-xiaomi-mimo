@@ -440,8 +440,8 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> 
     )
 
     # Debug: print cookies yang akan dikirim
-    cookie_names = sorted({c.name for c in session.cookies})
-    print(f"  sending cookies: {cookie_names}")
+    # cookie_names = sorted({c.name for c in session.cookies})
+    # print(f"  sending cookies: {cookie_names}")
 
     resp = session.post(
         "https://global.account.xiaomi.com/pass/verifyEmailRegTicket",
@@ -547,7 +547,13 @@ def register() -> dict:
     print("\nAccount created successfully! Fetching cookies...")
 
     # Extract cookies
-    cookies = {c.name: c.value for c in session.cookies}
+    # cookies = {c.name: c.value for c in session.cookies}
+    cookies = {}
+    for name in ("passToken", "serviceToken", "cUserId", "userId", ):
+        val = session.cookies.get(name, domain="account.xiaomi.com") or session.cookies.get(name)
+        if val:
+            cookies[name] = val
+
     result = {
         "email": EMAIL,
         "password": PASSWORD,
