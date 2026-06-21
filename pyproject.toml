@@ -7,6 +7,7 @@ dependencies = [
     "curl_cffi>=0.7.0",
     "pycryptodome>=3.19.0",
     "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,7 @@ mimo-batch = "mimo.batch:main"
 mimo-setup-test = "mimo.setup_test:main"
 mimo-bot = "mimo.bot:main"
 mimo-refresh = "mimo.refresh:main"
+mimo-cf-setup = "mimo.cf_setup:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

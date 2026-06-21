@@ -54,6 +54,10 @@ python -m mimo.bot --account accounts.jsonl --row 0 --referral MX5V9X
 # Refresh cookies akun existing (TTL pendek, jangan register ulang)
 python -m mimo.refresh --all --account accounts.jsonl
 
+# Cloudflare Email Routing — bulk setup via API (no dashboard)
+python -m mimo.cf_setup --token $CF_API_TOKEN --domain mimo.kamu.com --dest gmail.anda@gmail.com
+python -m mimo.cf_setup --token $CF_API_TOKEN --zone-id $CF_ZONE_ID --status
+
 # Test Cloudflare Email Routing setup
 python -m mimo.setup_test
 
@@ -282,9 +286,10 @@ File `xiaomi_account.json` setelah berhasil:
 ├── .env.example
 ├── .gitignore
 ├── docs/
-│   └── cloudflare-setup.md      ← panduan setup catch-all email
+│   ├── cloudflare-setup.md       ← panduan manual setup catch-all
+│   └── cloudflare-api-setup.md   ← panduan API bulk setup
 ├── email_list.example.txt        ← template untuk strategi from_file
-├── captures/                     ← HAR + HTML asal (untuk referensi)
+├── captures/                     ← HAR + HTML asal (untuk referensi, ignored)
 ├── src/mimo/                     ← source code (package)
 │   ├── __init__.py
 │   ├── crypto.py                 ← AES + RSA helpers
@@ -292,22 +297,24 @@ File `xiaomi_account.json` setelah berhasil:
 │   ├── batch.py                  ← batch orchestrator + rate limiting
 │   ├── bot.py                    ← login Xiaomi + SSO MiMo + bind + UltraSpeed
 │   ├── refresh.py                ← cookie refresh untuk akun existing
+│   ├── cf_setup.py               ← Cloudflare Email Routing via API
 │   ├── email_gen.py              ← 3 strategi email generation
 │   ├── setup_test.py             ← test Cloudflare Email Routing
 │   ├── cli_encrypt.py            ← CLI debug tool
 │   └── crypto/
 │       ├── encrypt.cjs           ← Node.js EUI generator (optional)
 │       └── payload_template.json ← captcha fingerprint template
-└── tests/                        ← 79 unit tests
+└── tests/                        ← 102 unit tests
     ├── test_crypto.py
     ├── test_har_match.py
     ├── test_email_gen.py
     ├── test_batch.py
     ├── test_bot.py
-    └── test_refresh.py
+    ├── test_refresh.py
+    └── test_cf_setup.py
 ```
 
-## CLI commands (6 entrypoints)
+## CLI commands (7 entrypoints)
 
 | Command | Fungsi |
 |---|---|
@@ -315,6 +322,7 @@ File `xiaomi_account.json` setelah berhasil:
 | `mimo-batch` | Daftar banyak akun sequential dengan rate limiting |
 | `mimo-bot` | Login + SSO MiMo + bind referral + apply UltraSpeed |
 | `mimo-refresh` | Refresh cookies akun existing (no register ulang) |
+| `mimo-cf-setup` | Setup Cloudflare Email Routing via API (bulk) |
 | `mimo-encrypt` | Encrypt field/payload manual (debug) |
 | `mimo-setup-test` | Test Cloudflare Email Routing + IMAP |
 
@@ -324,6 +332,7 @@ mimo-register --help
 mimo-batch --help
 mimo-bot --help
 mimo-refresh --help
+mimo-cf-setup --help
 mimo-encrypt --help
 mimo-setup-test
 ```
