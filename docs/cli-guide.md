@@ -13,6 +13,7 @@
    - [`mimo-bot`](#mimo-bot) — login + SSO + bind + UltraSpeed
    - [`mimo-refresh`](#mimo-refresh) — refresh cookies expired
    - [`mimo-e2e`](#mimo-e2e) — **orchestrator end-to-end** (register → SSO → profile → API key)
+   - [`mimo-bulk`](#mimo-bulk) — **bulk N akun sequential** (register → SSO → API key)
    - [`mimo-cf-setup`](#mimo-cf-setup) — setup Cloudflare Email Routing
    - [`mimo-encrypt`](#mimo-encrypt) — debug encrypt manual
    - [`mimo-setup-test`](#mimo-setup-test) — verify Cloudflare + IMAP
@@ -29,7 +30,8 @@
 | `mimo-batch` | Daftar banyak akun sequential | ✅ | ⚠ (VPS) |
 | `mimo-bot` | Login Xiaomi + SSO MiMo + bind + UltraSpeed | ❌ (pakai cookies) | ⚠ (VPS) |
 | `mimo-refresh` | Refresh cookies akun existing | ✅ (kalau expired) | ⚠ (VPS) |
-| `mimo-e2e` | **register → SSO → profile → API key** | ✅ (kalau register) | ⚠ (VPS) |
+| `mimo-e2e` | **register → SSO → profile → API key** (1 akun) | ✅ (kalau register) | ⚠ (VPS) |
+| **`mimo-bulk`** | **bulk register → SSO → API key (N akun sequential)** | ✅ | ⚠ (VPS) |
 | `mimo-cf-setup` | Setup Cloudflare Email Routing via API | ❌ | ❌ |
 | `mimo-encrypt` | Debug: encrypt field/payload manual | ❌ | ❌ |
 | `mimo-setup-test` | Verify Cloudflare Email Routing + IMAP | ❌ (SMTP only) | ❌ |
@@ -385,6 +387,127 @@ mimo-e2e --account xiaomi_account.json --api-key-name "key-v2"
 
 ---
 
+### `mimo-e2e`
+
+**Orchestrator end-to-end**: register akun → SSO MiMo → load profile → create API key.
+
+**Usage**:
+```bash
+mimo-e2e --email EMAIL --password PASSWORD [OPTIONS]
+# atau
+mimo-e2e --account FILE --row N [OPTIONS]
+```
+
+**Wajib** (salah satu):
+- `--email EMAIL` + `--password PASSWORD` — register akun baru
+- `--account FILE` — JSON file dengan akun existing (skip register)
+
+**Opsional**:
+- `--row N` — row index di file (default 0)
+- `--api-key-name NAME` — create API key dengan nama ini setelah SSO
+- `--list-api-keys` — list existing API keys (skip create)
+- `--no-api-key` — skip API key creation
+
+**Contoh**:
+```bash
+# Register + SSO + profile (no API key)
+mimo-e2e --email baru@domain.com --password 'Str0ngP@ss!'
+
+# Full pipeline: register + SSO + create API key
+mimo-e2e --email baru@domain.com --password 'Str0ngP@ss!' --api-key-name "my-app"
+
+# Pakai existing + list API keys
+mimo-e2e --account xiaomi_account.json --list-api-keys
+
+# Pakai existing + create new API key
+mimo-e2e --account xiaomi_account.json --api-key-name "key-v2"
+
+# Zero-args — pakai defaults dari env (EMAIL_DOMAIN, XIAOMI_PASSWORD, API_KEY_NAME)
+mimo-e2e
+```
+
+**Output**:
+- `xiaomi_account.json` (array, append mode) — semua akun + cookies + profile + api_key
+- `accounts.txt` (pipe-separated `email|password|apiKey`) — flat list
+- `mimo_api_key.json` (single, mode 600) — kalau create API key
+
+**Catatan**:
+- **Paling sering dipakai** untuk full pipeline per akun
+- 5 step dalam 1 command:
+  1. Register akun baru (atau pakai existing)
+  2. Login pakai passToken (skip captcha)
+  3. SSO ke platform.xiaomimimo.com
+  4. GET `/api/v1/userProfile` (verify session)
+  5. Check agreement → kalau true, POST `/api/v1/apiKeys` (create API key)
+- `bind_referral` OFF (perlu phone verification, di-skip)
+- **Env defaults** (zero-args): EMAIL → auto-generate dari EMAIL_DOMAIN, password → XIAOMI_PASSWORD, api-key → API_KEY_NAME
+
+---
+
+### `mimo-bulk`
+
+**Bulk end-to-end orchestrator**: register → SSO → API key untuk **banyak akun sequential**. Mirip `mimo-e2e` tapi untuk N akun dengan rate limiting.
+
+**Usage**:
+```bash
+mimo-bulk --count N [OPTIONS]
+# atau
+mimo-bulk --from-jsonl FILE [OPTIONS]
+```
+
+**Wajib** (salah satu):
+- `--count N` — jumlah akun yang akan dibuat
+- `--from-jsonl FILE` — path ke JSONL file dengan email list (output `mimo-batch`)
+
+**Opsional**:
+- `--email-domain DOMAIN` — domain untuk generate email (default: dari `EMAIL_DOMAIN` env)
+- `--api-key-name NAME` — nama API key (default: dari `API_KEY_NAME` env, atau `bulk-key`)
+- `--password PWD` — password untuk semua akun (default: `XIAOMI_PASSWORD` env, atau random per akun)
+- `--delay-min S` — delay minimum antar akun, detik (default 300 = 5min)
+- `--delay-max S` — delay maksimum antar akun, detik (default 900 = 15min)
+- `--out FILE` — output JSON file (default: `xiaomi_account.json`)
+- `--dry-run` — cetak plan tanpa eksekusi
+
+**Contoh**:
+```bash
+# Zero args — pakai env defaults (EMAIL_DOMAIN, XIAOMI_PASSWORD, API_KEY_NAME)
+mimo-bulk
+
+# 5 akun dengan default delay (5-15 min antar akun)
+mimo-bulk --count 5
+
+# Custom domain + delay
+mimo-bulk --count 10 --email-domain other-domain.com --delay-min 600 --delay-max 1200
+
+# Process existing JSONL (output dari mimo-batch)
+mimo-bulk --from-jsonl accounts.jsonl
+
+# Pakai custom API key name
+mimo-bulk --count 3 --api-key-name "production-v1"
+
+# Dry run — lihat plan tanpa register
+mimo-bulk --count 3 --dry-run
+```
+
+**Output**:
+- `xiaomi_account.json` (array, append mode) — semua akun
+- `accounts.txt` (pipe-separated) — flat list email|password|apiKey
+- `mimo_api_key.json` (mode 600) — last API key
+- `bulk_run.log.jsonl` — per-account run log (status, error, timestamps)
+
+**Resume mode**: kalau file `xiaomi_account.json` sudah ada, akun yang sudah punya `api_key` di-skip. Re-run aman untuk lanjut.
+
+**Catatan**:
+- **Paling cocok untuk produksi** (10-100 akun)
+- Sequential 1 akun pada satu waktu — JANGAN parallel
+- Random delay 5-15 menit (default) — anti rate limit Xiaomi
+- Random password per akun (kalau `XIAOMI_PASSWORD` env kosong) — disimpan ke output
+- CAPTCHA: pakai CapSolver per akun (~$0.003/solve)
+- Per akun ~3-5 menit (register + SSO + API key), + delay 5-15 menit → 8-20 menit per akun
+- Untuk 10 akun: ~80-200 menit (~1.5-3.5 jam)
+
+---
+
 ### `mimo-cf-setup`
 
 Setup Cloudflare Email Routing via API (catch-all forwarding).
@@ -719,6 +842,11 @@ mimo-e2e --email X --password Y
 
 # Bulk akun
 mimo-batch --count N --email-strategy catch_all --email-domain DOMAIN
+
+# Bulk akun (full pipeline per akun)
+mimo-bulk                                # pakai env defaults
+mimo-bulk --count 5                      # 5 akun
+mimo-bulk --from-jsonl accounts.jsonl   # process existing emails
 
 # Apply MiMo features
 mimo-bot --account FILE --row 0 --referral CODE

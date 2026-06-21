@@ -61,6 +61,8 @@ accounts_*.jsonl
 mimo_api_key.json
 mimo_api_key_*.json
 accounts.txt
+bulk_run.log.jsonl
+bulk_run.log*.jsonl
 *.log
 
 # ─── Reference captures (HAR + HTML dari browser asli, besar) ──────────────
