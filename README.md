@@ -337,6 +337,15 @@ mimo-encrypt --help
 mimo-setup-test
 ```
 
+## Dokumentasi
+
+- **[`README.md`](README.md)** — Project overview + quick start (file ini)
+- **[`PRD.md`](PRD.md)** — Product Requirements Document
+- **[`docs/cli-guide.md`](docs/cli-guide.md)** — **Panduan lengkap tiap CLI command** ⭐
+- **[`docs/cloudflare-setup.md`](docs/cloudflare-setup.md)** — Setup Cloudflare Email Routing (manual)
+- **[`docs/cloudflare-api-setup.md`](docs/cloudflare-api-setup.md)** — Setup Cloudflare via API + permission
+---
+
 ## Lisensi
 
 Private use only. Hormati ToS Xiaomi.

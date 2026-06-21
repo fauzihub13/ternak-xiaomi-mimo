@@ -151,7 +151,7 @@ def save_account_to_files(account: dict, profile: dict, api_key_data: dict = Non
     else:
         lines = []
     # Add new line
-    api_key_str = api_key_data.get("apiKey", "") if api_key_data else ""
+    api_key_str = api_key_data.get("apiKey", "") if api_key_data else "no-api-key-created"
     lines.append(f"{account['email']}|{account['password']}|{api_key_str}")
     txt_path.write_text("\n".join(lines) + "\n")
     try:
