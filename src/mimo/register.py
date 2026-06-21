@@ -402,10 +402,28 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> 
     enc_password = out["encryptedParams"]["password"]
     device_fp = "".join(random.choices("0123456789abcdef", k=32))
 
+    # Headers HAR — penting agar tidak di-block server.
+    # HAR entry #8: ada origin + referer ke verify page (bukan register page).
     headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
         "eui": eui,
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
+        "origin": "https://global.account.xiaomi.com",
+        "referer": (
+            "https://global.account.xiaomi.com/fe/service/register/email/verify"
+            "?_locale=en&_uRegion=ID"
+            f"&_user={quote(EMAIL, safe='')}"
+            "&_agreementChecked=true"
+        ),
+        "user-agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/149.0.0.0 Safari/537.36"
+        ),
+        "x-requested-with": "XMLHttpRequest",
     }
     body = (
         f"ticket={code}"
@@ -420,16 +438,52 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> 
         f"&callback="
         f"&deviceFingerprint={device_fp}"
     )
+
+    # Debug: print cookies yang akan dikirim
+    cookie_names = sorted({c.name for c in session.cookies})
+    print(f"  sending cookies: {cookie_names}")
+
     resp = session.post(
         "https://global.account.xiaomi.com/pass/verifyEmailRegTicket",
         data=body, headers=headers,
     )
     text = resp.text
-    print(f"  raw response: {text[:300]}")
-    data = parse_xiaomi(text)
+    print(f"  status: {resp.status_code}")
+    print(f"  raw response: {text[:500]}")
+    set_cookies = resp.headers.get_list("Set-Cookie") if hasattr(resp.headers, "get_list") else []
+    if set_cookies:
+        print(f"  response set-cookies ({len(set_cookies)}):")
+        for sc in set_cookies:
+            print(f"    {sc[:150]}")
+    try:
+        data = parse_xiaomi(text)
+    except json.JSONDecodeError as e:
+        raise RegisterError(
+            f"verifyEmailRegTicket returned non-JSON: {e}; "
+            f"status={resp.status_code}; body={text[:300]}"
+        )
     print(f"  parsed: {data}")
-    if data.get("code") != 0:
-        raise RegisterError(f"verifyEmailRegTicket failed: {data}")
+
+    code_val = data.get("code")
+    desc = data.get("description", "")
+
+    # Specific error guidance
+    if code_val != 0:
+        hints = {
+            70003: "Tiket OTP salah atau kadaluarsa. Coba lagi dengan ticket baru.",
+            70022: "Rate limit — terlalu sering. Tunggu beberapa menit.",
+            70016: "Captcha perlu diulang — re-run dari step 2.",
+            87001: "Captcha verification error — re-run dari step 2.",
+            88205: "Email address ditolak oleh Xiaomi. Coba email lain.",
+            70002: "Email atau password salah (atau sudah dipakai).",
+        }
+        hint = hints.get(code_val, "Lihat description untuk detail.")
+        raise RegisterError(
+            f"verifyEmailRegTicket failed: code={code_val} "
+            f"description={desc} "
+            f"hint={hint} "
+            f"data={data.get('data')}"
+        )
     return data
 
 
@@ -489,6 +543,8 @@ def register() -> dict:
     step6_send_email_reg_ticket(session, vtoken, eui, enc_email, enc_password)
     code = step7_read_imap_code()
     step8_verify_email_reg_ticket(session, code)
+
+    print("\nAccount created successfully! Fetching cookies...")
 
     # Extract cookies
     cookies = {c.name: c.value for c in session.cookies}
