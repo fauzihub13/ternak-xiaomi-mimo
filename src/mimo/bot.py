@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 
 from .crypto import encrypt_captcha_payload, encrypt_form_fields
 from .register import build_fingerprint_payload
+from ._ansi import C
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Constants
@@ -67,17 +68,6 @@ MIMO_ULTRASPEED    = f"{MIMO_BASE}/api/v1/mimo-speed/apply"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Console helpers
 # ═══════════════════════════════════════════════════════════════════════════════
-
-class C:
-    RESET   = "\033[0m"
-    RED     = "\033[91m"
-    GREEN   = "\033[92m"
-    YELLOW  = "\033[93m"
-    BLUE    = "\033[94m"
-    MAGENTA = "\033[95m"
-    CYAN    = "\033[96m"
-    BOLD    = "\033[1m"
-
 
 def info(msg):  print(f"{C.CYAN}[*]{C.RESET} {msg}")
 def ok(msg):    print(f"{C.GREEN}[✓]{C.RESET} {msg}")

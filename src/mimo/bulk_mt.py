@@ -45,6 +45,7 @@ from .bulk import (
     utcnow_iso,
 )
 from .e2e import save_account_to_files
+from ._ansi import C
 
 load_dotenv()
 
@@ -61,6 +62,41 @@ def tprint(msg: str) -> None:
     """Thread-safe print — serialize stdout supaya output tidak tumpang tindih."""
     with _print_lock:
         print(msg, flush=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Color & trim helpers (no-op kalau bukan TTY)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_USE_COLOR = sys.stdout.isatty()
+_PALETTE = {
+    "reset":  C.RESET,
+    "bold":   C.BOLD,
+    "dim":    C.DIM,
+    "gray":   C.GRAY,
+    "red":    C.RED,
+    "green":  C.GREEN,
+    "yellow": C.YELLOW,
+    "cyan":   C.CYAN,
+}
+
+
+def _c(name: str, s: str) -> str:
+    """Wrap string dengan ANSI color, no-op kalau stdout bukan TTY."""
+    if not _USE_COLOR:
+        return s
+    return f"{_PALETTE[name]}{s}{C.RESET}"
+
+
+def _short(s, maxlen: int = 100) -> str:
+    """Trim string untuk log: ambil baris pertama, potong di maxlen + ellipsis."""
+    if s is None:
+        return ""
+    s = str(s)
+    s = s.split("\n", 1)[0].strip()
+    if len(s) > maxlen:
+        return s[:maxlen].rstrip() + "…"
+    return s
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -94,10 +130,10 @@ def _worker(idx: int, total: int, email: str, password: str, api_key_name: str,
 
     idx: 1-based index akun
     """
-    tag = f"[{idx}/{total}]"
-    tprint(f"\n{'=' * 60}")
-    tprint(f"{tag} START {email}")
-    tprint(f"{'=' * 60}")
+    tag = _c("cyan", f"[{idx}/{total}]")
+    tprint(f"\n{_c('dim', '=' * 60)}")
+    tprint(f"{tag} {_c('bold', 'START')} {email}")
+    tprint(f"{_c('dim', '=' * 60)}")
 
     t0 = time.time()
     result = process_one(email, password, api_key_name, dry_run=dry_run)
@@ -105,12 +141,14 @@ def _worker(idx: int, total: int, email: str, password: str, api_key_name: str,
 
     status = result.get("status", "unknown")
     if status == "success":
-        tprint(f"{tag} ✓ SUCCESS {email} ({elapsed:.1f}s)")
+        tprint(f"{tag} {_c('green', '✓ SUCCESS')} {email} "
+               f"{_c('dim', f'({elapsed:.1f}s)')}")
     elif status == "dry_run":
-        tprint(f"{tag} ~ DRY RUN {email}")
+        tprint(f"{tag} {_c('yellow', '~ DRY RUN')} {email}")
     else:
-        err = result.get("error", "unknown")
-        tprint(f"{tag} ✗ FAILED {email} ({elapsed:.1f}s) — {err}")
+        err = _short(result.get("error", "unknown"), maxlen=120)
+        tprint(f"{tag} {_c('red', '✗ FAILED')} {email} "
+               f"{_c('dim', f'({elapsed:.1f}s)')} — {err}")
 
     return result
 
@@ -156,15 +194,15 @@ def run(
     if from_jsonl:
         emails = load_jsonl_emails(from_jsonl)
         if not emails:
-            tprint(f"[FAIL] no valid emails in {from_jsonl}")
+            tprint(_c("red", f"[FAIL] no valid emails in {from_jsonl}"))
             return []
         tprint(f"[bulk_mt] loaded {len(emails)} emails dari {from_jsonl}")
     elif email_domain:
         emails = [generate_email(email_domain) for _ in range(count)]
         tprint(f"[bulk_mt] generate {count} emails di {email_domain}")
     else:
-        tprint("[FAIL] provide --count + --email-domain, OR --from-jsonl, "
-               "OR set EMAIL_DOMAIN env")
+        tprint(_c("red", "[FAIL] provide --count + --email-domain, OR --from-jsonl, "
+                          "OR set EMAIL_DOMAIN env"))
         return []
 
     # ── Resume: skip emails yang sudah ada di output file ──────────────
@@ -186,17 +224,18 @@ def run(
     # ── Plan ───────────────────────────────────────────────────────────
     workers = max(1, min(workers, len(emails)))
     print()
-    print("=" * 60)
-    print(f"BULK REGISTER (MULTI-THREADED): {len(emails)} akun, {workers} workers")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", f"BULK REGISTER (MULTI-THREADED): "
+                      f"{len(emails)} akun, {workers} workers"))
+    print(_c("cyan", "=" * 60))
     print(f"  Email domain    : {email_domain}")
     print(f"  API key name    : {api_key_name}")
     print(f"  Password        : {'random per akun' if use_random_password else 'XIAOMI_PASSWORD env'}")
     print(f"  Workers         : {workers} concurrent threads")
     print(f"  Output          : {out_path}")
     print(f"  Resume mode     : skip kalau sudah ada API key")
-    print(f"  File I/O lock   : aktif (save_account_to_files serialized)")
-    print("=" * 60)
+    print(f"  File I/O lock   : {_c('green', 'aktif')} (save_account_to_files serialized)")
+    print(_c("cyan", "=" * 60))
     if dry_run:
         print("\n[DRY RUN] Sample emails:")
         for e in emails[:5]:
@@ -247,17 +286,17 @@ def run(
 
     # ── Summary ────────────────────────────────────────────────────────
     print()
-    print("=" * 60)
-    print("BULK MT SUMMARY")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", "BULK MT SUMMARY"))
+    print(_c("cyan", "=" * 60))
     print(f"  Total   : {total}")
-    print(f"  Success : {success}")
-    print(f"  Failed  : {failed}")
+    print(f"  Success : {_c('green', str(success))}")
+    print(f"  Failed  : {_c('red' if failed else 'dim', str(failed))}")
     print(f"  Workers : {workers}")
     print(f"  Elapsed : {elapsed_total:.1f}s "
-          f"(avg {elapsed_total / max(total, 1):.1f}s/akun)")
+          f"{_c('dim', f'(avg {elapsed_total / max(total, 1):.1f}s/akun)')}")
     print(f"  Output  : {out_path}")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
 
     # Save bulk run log (append, dengan lock)
     log_path = Path("bulk_mt_run.log.jsonl")

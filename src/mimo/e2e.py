@@ -28,9 +28,34 @@ from .bot import (
     MIMO_BASE,
     make_session,
 )
+from ._ansi import C
 from curl_cffi import requests as cffi_requests
 
 load_dotenv()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Color helper (TTY-aware — no-op kalau stdout di-pipe)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_USE_COLOR = sys.stdout.isatty()
+_PALETTE = {
+    "reset":  C.RESET,
+    "bold":   C.BOLD,
+    "dim":    C.DIM,
+    "gray":   C.GRAY,
+    "red":    C.RED,
+    "green":  C.GREEN,
+    "yellow": C.YELLOW,
+    "cyan":   C.CYAN,
+}
+
+
+def _c(name: str, s: str) -> str:
+    """Wrap string dengan ANSI color, no-op kalau stdout bukan TTY."""
+    if not _USE_COLOR:
+        return s
+    return f"{_PALETTE[name]}{s}{C.RESET}"
 
 
 def _generate_email() -> str | None:
@@ -88,7 +113,7 @@ def load_account_file(path: str, row: int = 0) -> dict:
                 if obj.get("status") == "success":
                     rows.append(obj)
             except json.JSONDecodeError as e:
-                print(f"  [warn] line {i} invalid JSON: {e}")
+                print(_c("yellow", f"  [warn] line {i} invalid JSON: {e}"))
     else:
         # Single JSON object (might be one record or array)
         try:
@@ -113,7 +138,7 @@ def load_account_file(path: str, row: int = 0) -> dict:
 
 def load_profile(session) -> dict:
     """GET /api/v1/userProfile — verify session + return user data."""
-    print("  [4/6] GET /api/v1/userProfile…", end=" ")
+    print(f"  {_c('cyan', '[4/6]')} GET /api/v1/userProfile…", end=" ")
     r = session.get(f"{MIMO_BASE}/api/v1/userProfile", impersonate="chrome124")
     if r.status_code != 200:
         raise RuntimeError(f"profile failed: {r.status_code} {r.text[:200]}")
@@ -121,7 +146,7 @@ def load_profile(session) -> dict:
     if data.get("code") != 0:
         raise RuntimeError(f"profile error code={data.get('code')}: {data.get('message', data)}")
     profile = data["data"]
-    print(f"✓ userId={profile['userId']}")
+    print(f"{_c('green', '✓')} userId={profile['userId']}")
     return profile
 
 
@@ -133,7 +158,7 @@ def check_agreement(session) -> bool:
     Raises RuntimeError kalau gagal hit endpoint.
     """
     # 1. GET /api/v1/agreement — verify endpoint reachable
-    print("  [5a] GET /api/v1/agreement…", end=" ")
+    print(f"  {_c('cyan', '[5a]')} GET /api/v1/agreement…", end=" ")
     jar = getattr(session.cookies, "jar", session.cookies)
     ph = next((c.value for c in jar if c.name == "api-platform_ph"), None)
     if not ph:
@@ -146,19 +171,19 @@ def check_agreement(session) -> bool:
     data = r.json()
     if data.get("code") != 0:
         raise RuntimeError(f"agreement endpoint error code={data.get('code')}: {data.get('message', data)}")
-    print(f"✓ (code={data['code']})")
+    print(f"{_c('green', '✓')} (code={data['code']})")
 
     # 2. Check actual status via userProfile (agreement field)
-    print("  [5b] GET /api/v1/userProfile (check agreement)…", end=" ")
+    print(f"  {_c('cyan', '[5b]')} GET /api/v1/userProfile (check agreement)…", end=" ")
     r = session.get(f"{MIMO_BASE}/api/v1/userProfile", impersonate="chrome124")
     if r.status_code != 200:
         raise RuntimeError(f"profile check failed: {r.status_code}")
     profile = r.json().get("data", {})
     agreed = profile.get("agreement", False)
     if agreed:
-        print(f"✓ agreement=true")
+        print(f"{_c('green', '✓')} agreement=true")
     else:
-        print(f"⚠ agreement=false (perlu accept manual via dashboard)")
+        print(f"{_c('yellow', '⚠')} agreement=false (perlu accept manual via dashboard)")
     return agreed
 
 
@@ -204,7 +229,7 @@ def save_account_to_files(account: dict, profile: dict, api_key_data: dict = Non
         json_path.chmod(0o600)
     except Exception:
         pass
-    print(f"  [saved] {json_path} ({len(existing)} akun total)")
+    print(f"  {_c('green', '[saved]')} {json_path} ({len(existing)} akun total)")
 
     # ── accounts.txt : email|password|apikey per line ───────────────────
     txt_path = Path("accounts.txt")
@@ -232,12 +257,12 @@ def save_account_to_files(account: dict, profile: dict, api_key_data: dict = Non
         txt_path_api_key_only.chmod(0o600)
     except Exception:
         pass
-    print(f"  [saved] {txt_path} ({len(lines)} akun total)")
-    print(f"  [saved] {txt_path_api_key_only} ({len(lines_api_key_only)} akun total)")
+    print(f"  {_c('green', '[saved]')} {txt_path} ({len(lines)} akun total)")
+    print(f"  {_c('green', '[saved]')} {txt_path_api_key_only} ({len(lines_api_key_only)} akun total)")
 
 def list_api_keys(session) -> list[dict]:
     """GET /api/v1/apiKeys — list existing API keys."""
-    print("  [list] GET /api/v1/apiKeys…", end=" ")
+    print(f"  {_c('cyan', '[list]')} GET /api/v1/apiKeys…", end=" ")
     r = session.get(f"{MIMO_BASE}/api/v1/apiKeys", impersonate="chrome124")
     if r.status_code != 200:
         raise RuntimeError(f"list apiKeys failed: {r.status_code} {r.text[:200]}")
@@ -245,7 +270,7 @@ def list_api_keys(session) -> list[dict]:
     if data.get("code") != 0:
         raise RuntimeError(f"list apiKeys error: {data.get('message', data)}")
     keys = data.get("data") or []
-    print(f"✓ ({len(keys)} existing)")
+    print(f"{_c('green', '✓')} ({len(keys)} existing)")
     return keys
 
 
@@ -255,7 +280,7 @@ def create_api_key(session, api_key_name: str = "mimo-register") -> dict:
     Note: MiMo requires `api-platform_ph` as QUERY PARAM (not cookie) for
     this endpoint. Server-side validation likely checks both.
     """
-    print(f"  [6/6] POST /api/v1/apiKeys (name={api_key_name!r})…", end=" ")
+    print(f"  {_c('cyan', '[6/6]')} POST /api/v1/apiKeys (name={api_key_name!r})…", end=" ")
 
     # Extract api-platform_ph from session cookies
     jar = getattr(session.cookies, "jar", session.cookies)
@@ -287,7 +312,7 @@ def create_api_key(session, api_key_name: str = "mimo-register") -> dict:
         raise RuntimeError(f"create apiKey error code={data.get('code')}: {data.get('message', data)}")
 
     key_data = data["data"]
-    print(f"✓ id={key_data.get('id')} key={key_data.get('apiKey', '')[:25]}…")
+    print(f"{_c('green', '✓')} id={key_data.get('id')} key={key_data.get('apiKey', '')[:25]}…")
 
     # Save to file (mode 0o600 — owner read/write only)
     out_path = Path("mimo_api_key.json")
@@ -331,7 +356,7 @@ def run(email: str = None, password: str = None,
     if email is None and account_file is None:
         email = _generate_email()
         if email:
-            print(f"[auto-email] {email}  (dari EMAIL_DOMAIN env)")
+            print(_c("dim", f"[auto-email] {email}  (dari EMAIL_DOMAIN env)"))
         else:
             raise RuntimeError(
                 "tidak ada --email/--account, dan EMAIL_DOMAIN env tidak diset. "
@@ -342,97 +367,98 @@ def run(email: str = None, password: str = None,
         password = _default_password()
         env_pw = os.getenv("XIAOMI_PASSWORD", "")
         if env_pw:
-            print(f"[auto-password] dari XIAOMI_PASSWORD env")
+            print(_c("dim", "[auto-password] dari XIAOMI_PASSWORD env"))
         else:
-            print(f"[auto-password] generated random (tidak ada di env)")
+            print(_c("dim", "[auto-password] generated random (tidak ada di env)"))
     if api_key_name is None and not list_keys and create_key:
         api_key_name = os.getenv("API_KEY_NAME", "").strip() or "mimo-register"
-        print(f"[auto-api-key-name] {api_key_name}")
+        print(_c("dim", f"[auto-api-key-name] {api_key_name}"))
 
-    print("=" * 60)
-    print(f"E2E: register → SSO → MiMo profile (→ API key?)")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", "E2E: register → SSO → MiMo profile (→ API key?)"))
+    print(_c("cyan", "=" * 60))
 
     # ── Step 1: Register atau pakai existing ─────────────────────────────
     account = None
     if account_file:
         account = load_account_file(account_file, account_row)
         email = account["email"]
-        print(f"[1/6] Skip register — pakai existing: {email} (from {account_file})")
+        print(f"{_c('cyan', '[1/6]')} Skip register — pakai existing: {email} (from {account_file})")
         if not account.get("cookies", {}).get("passToken"):
-            print("  ⚠ cookies kosong / tidak ada passToken — register ulang")
+            print(_c("yellow", "  ⚠ cookies kosong / tidak ada passToken — register ulang"))
             password = password or account.get("password")
             if not password:
                 raise RuntimeError("no password saved in account record")
             account = register(email=email, password=password)
     elif email:
         password = password or None  # will use XIAOMI_PASSWORD env if None
-        print(f"[1/6] Register akun baru: {email}")
+        print(f"{_c('cyan', '[1/6]')} Register akun baru: {email}")
         try:
             account = register(email=email, password=password)
         except RegisterError as e:
-            print(f"  ✗ register failed: {e}", file=sys.stderr)
+            print(f"  {_c('red', '✗')} register failed: {e}", file=sys.stderr)
             raise
 
     else:
         raise RuntimeError("provide --email + --password, OR --account <file>")
 
-    print(f"  ✓ cookies: {list(account['cookies'].keys())}")
+    print(f"  {_c('green', '✓')} cookies: {list(account['cookies'].keys())}")
 
     # ── Step 2: Login pakai existing cookies (skip captcha) ─────────────
-    print(f"\n[2/6] Login pakai existing cookies")
+    print(f"\n{_c('cyan', '[2/6]')} Login pakai existing cookies")
     login_data = login_with_cookies(account)
-    print(f"  ✓ session ready (email={login_data['email']})")
+    print(f"  {_c('green', '✓')} session ready (email={login_data['email']})")
 
     # ── Step 3: SSO ke MiMo ─────────────────────────────────────────────
-    print(f"\n[3/6] SSO ke platform.xiaomimimo.com")
+    print(f"\n{_c('cyan', '[3/6]')} SSO ke platform.xiaomimimo.com")
     sso = sso_to_mimo(login_data)
     if not sso:
         raise RuntimeError("SSO failed (lihat output di atas untuk detail)")
     mimo_session = sso["session"]
 
     # ── Step 4: Load profile ────────────────────────────────────────────
-    print(f"\n[4/6] Load MiMo profile")
+    print(f"\n{_c('cyan', '[4/6]')} Load MiMo profile")
     profile = load_profile(mimo_session)
 
     # ── Step 5 (optional): List / create API key ───────────────────────
     api_key_result = None
     if list_keys:
-        print(f"\n[5/6] List existing API keys")
+        print(f"\n{_c('cyan', '[5/6]')} List existing API keys")
         keys = list_api_keys(mimo_session)
         api_key_result = {"existing": keys}
         for i, k in enumerate(keys, 1):
             print(f"  [{i}] {k.get('apiKeyName')}: id={k.get('id')} {k.get('redactedApiKey')}")
     elif api_key_name and create_key:
         # Verify agreement dulu — kalau belum true, skip create API key
-        print(f"\n[5/6] Check agreement (prerequisite untuk API key)")
+        print(f"\n{_c('cyan', '[5/6]')} Check agreement (prerequisite untuk API key)")
         agreed = check_agreement(mimo_session)
         if not agreed:
-            print(f"  ⚠ SKIP create API key — agreement belum di-accept")
-            print(f"     Login manual ke https://platform.xiaomimimo.com untuk accept")
+            print(_c("yellow", "  ⚠ SKIP create API key — agreement belum di-accept"))
+            print(_c("dim",   "     Login manual ke https://platform.xiaomimimo.com untuk accept"))
             api_key_result = None
         else:
-            print(f"\n[6/6] Create API key")
+            print(f"\n{_c('cyan', '[6/6]')} Create API key")
             api_key_result = create_api_key(mimo_session, api_key_name)
     else:
         if not create_key:
-            print(f"\n[5/6] Skip API key creation (--no-api-key)")
+            print(f"\n{_c('dim', '[5/6]')} Skip API key creation (--no-api-key)")
         else:
-            print(f"\n[5/6] Skip API key creation (no --api-key-name, --list-api-keys, atau API_KEY_NAME env)")
+            print(f"\n{_c('dim', '[5/6]')} Skip API key creation "
+                  f"(no --api-key-name, --list-api-keys, atau API_KEY_NAME env)")
 
     # ── Summary ────────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("✓✓✓ BERHASIL MASUK MiMo PLATFORM ✓✓✓")
-    print("=" * 60)
+    print("\n" + _c("cyan", "=" * 60))
+    print(_c("bold", _c("green", "✓✓✓ BERHASIL MASUK MiMo PLATFORM ✓✓✓")))
+    print(_c("cyan", "=" * 60))
     print(f"  Email        : {profile.get('email')}")
     print(f"  User ID      : {profile.get('userId')}")
-    print(f"  Phone        : {profile.get('phone') or '(belum di-bind)'}")
-    print(f"  Agreement    : {profile.get('agreement')}")
+    print(f"  Phone        : {profile.get('phone') or _c('dim', '(belum di-bind)')}")
+    print(f"  Agreement    : {_c('green' if profile.get('agreement') else 'yellow', str(profile.get('agreement')))}")
     print(f"  IDC          : {profile.get('idc')}")
 
     if api_key_result:
         if "apiKey" in api_key_result:
-            print(f"  API Key      : {api_key_result['apiKey'][:35]}…")
+            print(f"  API Key      : {_c('green', api_key_result['apiKey'][:35] + '…')}")
             print(f"  API Key ID   : {api_key_result.get('id')}")
         else:
             print(f"  API Keys     : {len(api_key_result.get('existing', []))} existing")
@@ -441,9 +467,9 @@ def run(email: str = None, password: str = None,
     print()
     save_account_to_files(account, profile, api_key_result)
 
-    print("=" * 60)
-    print("  NOTE: bind_referral OFF — tidak apply UltraSpeed")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("dim",  "  NOTE: bind_referral OFF — tidak apply UltraSpeed"))
+    print(_c("cyan", "=" * 60))
 
     return {
         "email": email,
@@ -507,7 +533,7 @@ Env vars yang dipakai sebagai default:
             list_keys=args.list_api_keys,
             create_key=not args.no_api_key)
     except Exception as e:
-        print(f"\n[FAIL] {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"\n{_c('red', f'[FAIL] {type(e).__name__}: {e}')}", file=sys.stderr)
         sys.exit(1)
 
 

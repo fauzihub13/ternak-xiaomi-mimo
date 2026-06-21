@@ -22,6 +22,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +33,8 @@ from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
 from curl_cffi import requests as cffi_requests
 from dotenv import load_dotenv
+
+from ._ansi import C
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 load_dotenv()
@@ -78,6 +81,42 @@ USE_PROXY = os.getenv("USE_PROXY", "1") == "1"
 
 # Path ke encrypt.cjs
 ENCRYPT_CJS = Path(__file__).parent / "crypto" / "encrypt.cjs"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Color & trim helpers (TTY-aware — no-op kalau stdout di-pipe)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_USE_COLOR = sys.stdout.isatty()
+_PALETTE = {
+    "reset":  C.RESET,
+    "bold":   C.BOLD,
+    "dim":    C.DIM,
+    "gray":   C.GRAY,
+    "red":    C.RED,
+    "green":  C.GREEN,
+    "yellow": C.YELLOW,
+    "cyan":   C.CYAN,
+}
+
+
+def _c(name: str, s: str) -> str:
+    """Wrap string dengan ANSI color, no-op kalau stdout bukan TTY."""
+    if not _USE_COLOR:
+        return s
+    return f"{_PALETTE[name]}{s}{C.RESET}"
+
+
+def _short(s, maxlen: int = 60) -> str:
+    """Trim string untuk log: ambil baris pertama, potong di maxlen + ellipsis."""
+    if s is None:
+        return ""
+    s = str(s)
+    s = s.split("\n", 1)[0].strip()
+    if len(s) > maxlen:
+        return s[:maxlen].rstrip() + "…"
+    return s
+
 
 # ─── HTTP SESSION ────────────────────────────────────────────────────────────
 def make_session() -> cffi_requests.Session:
@@ -227,7 +266,7 @@ def solve_captcha_capsolver(e_token: str, timeout: int = 300) -> str | None:
                               impersonate="chrome124",
                               proxies={"https": PROXY_URL, "http": PROXY_URL} if USE_PROXY else None)
     result = resp.json()
-    print(f"  [capsolver] createTask: errorId={result.get('errorId')}, taskId={result.get('taskId')}")
+    print(f"  {_c('dim', '[capsolver]')} createTask: errorId={result.get('errorId')}, taskId={_short(result.get('taskId'), 20)}")
 
     if result.get("errorId", 0) != 0:
         raise RuntimeError(f"CapSolver createTask error: {result}")
@@ -245,11 +284,11 @@ def solve_captcha_capsolver(e_token: str, timeout: int = 300) -> str | None:
         )
         result = poll.json()
         status = result.get("status")
-        print(f"  [capsolver] poll: status={status}, errorId={result.get('errorId')}")
+        print(f"  {_c('dim', '[capsolver]')} poll: status={status}, errorId={result.get('errorId')}")
 
         if status == "ready":
             g = result["solution"]["gRecaptchaResponse"]
-            print(f"  [capsolver] ✓ solved: {g[:50]}...")
+            print(f"  {_c('dim', '[capsolver]')} {_c('green', '✓')} solved: {_short(g, 60)}")
             return g
         if result.get("errorId", 0) != 0:
             raise RuntimeError(f"CapSolver error: {result}")
@@ -262,14 +301,14 @@ class RegisterError(Exception):
 
 
 def step1_warmup(session: cffi_requests.Session) -> None:
-    print("\n[Step 1] GET register page (warm-up)...")
+    print(f"\n{_c('cyan', '[Step 1]')} GET register page (warm-up)…")
     resp = session.get(REGISTER_URL)
     print(f"  status: {resp.status_code}")
-    print(f"  cookies: {dict(session.cookies)}")
+    print(f"  cookies: {_short(dict(session.cookies), 80)}")
 
 
 def step2_captcha_data(session: cffi_requests.Session) -> str:
-    print("\n[Step 2] POST captcha/v2/data...")
+    print(f"\n{_c('cyan', '[Step 2]')} POST captcha/v2/data…")
     payload = build_fingerprint_payload()
     s, d = encrypt_captcha_payload(payload)
 
@@ -286,17 +325,17 @@ def step2_captcha_data(session: cffi_requests.Session) -> str:
         raise RegisterError(f"captcha/v2/data failed: {data}")
 
     e_token = parse_qs(urlparse(data["data"]["url"]).query)["e"][0]
-    print(f"  e_token: {e_token[:40]}...")
+    print(f"  e_token: {_short(e_token, 50)}")
     return e_token
 
 
 def step3_solve_captcha(e_token: str) -> str:
-    print("\n[Step 3] Solve reCAPTCHA Enterprise via CapSolver...")
+    print(f"\n{_c('cyan', '[Step 3]')} Solve reCAPTCHA Enterprise via CapSolver…")
     return solve_captcha_capsolver(e_token)
 
 
 def step4_recaptcha_verify(session: cffi_requests.Session, e_token: str, g_recaptcha: str) -> str:
-    print("\n[Step 4] POST captcha/v2/recaptcha/verify...")
+    print(f"\n{_c('cyan', '[Step 4]')} POST captcha/v2/recaptcha/verify…")
     ts = int(time.time() * 1000)
     url = f"https://verify.sec.xiaomi.com/captcha/v2/recaptcha/verify?k={CAPTCHA_PARAM_K}&locale=en_US&_t={ts}"
     body = f"e={quote(e_token)}&g={quote(g_recaptcha)}&type=4"
@@ -311,7 +350,7 @@ def step4_recaptcha_verify(session: cffi_requests.Session, e_token: str, g_recap
         raise RegisterError(f"recaptcha verify failed: {data}")
 
     vtoken = data["data"]["token"]
-    print(f"  vToken: {vtoken[:50]}...")
+    print(f"  vToken: {_short(vtoken, 60)}")
     return vtoken
 
 
@@ -323,19 +362,19 @@ def step5_encrypt(email: str = None, password: str = None) -> tuple[str, str, st
     """
     e = email or EMAIL
     p = password or PASSWORD
-    print("\n[Step 5] Encrypt email+password (EUI)...")
+    print(f"\n{_c('cyan', '[Step 5]')} Encrypt email+password (EUI)…")
     out = encrypt_form_fields({"email": e, "password": p})
     eui = out["EUI"]
     enc_email = out["encryptedParams"]["email"]
     enc_password = out["encryptedParams"]["password"]
-    print(f"  EUI: {eui[:60]}...")
-    print(f"  enc_email: {enc_email[:40]}...")
+    print(f"  EUI: {_short(eui, 60)}")
+    print(f"  enc_email: {_short(enc_email, 50)}")
     return eui, enc_email, enc_password
 
 
 def step6_send_email_reg_ticket(session: cffi_requests.Session, vtoken: str,
                                 eui: str, enc_email: str, enc_password: str) -> dict:
-    print("\n[Step 6] POST sendEmailRegTicket...")
+    print(f"\n{_c('cyan', '[Step 6]')} POST sendEmailRegTicket…")
 
     device_id = f"wb_{uuid.uuid4()}"
     # Cookies: vToken membawa captcha pass (BUKAN icode!)
@@ -362,9 +401,9 @@ def step6_send_email_reg_ticket(session: cffi_requests.Session, vtoken: str,
         data=body, headers=headers,
     )
     text = resp.text
-    print(f"  raw response: {text[:200]}")
+    print(f"  raw response: {_short(text, 120)}")
     data = parse_xiaomi(text)
-    print(f"  parsed: {data}")
+    print(f"  parsed: {_short(data, 120)}")
     if data.get("code") != 0:
         raise RegisterError(f"sendEmailRegTicket failed: {data}")
     print(f"  vCodeLen: {data.get('data', {}).get('vCodeLen')}")
@@ -372,7 +411,7 @@ def step6_send_email_reg_ticket(session: cffi_requests.Session, vtoken: str,
 
 
 def step7_read_imap_code(email: str, timeout: int = 120) -> str:
-    print(f"\n[Step 7] Read 6-digit code from IMAP for {email}...")
+    print(f"\n{_c('cyan', '[Step 7]')} Read 6-digit code from IMAP for {email}…")
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -404,20 +443,20 @@ def step7_read_imap_code(email: str, timeout: int = 120) -> str:
                 match = re.search(r"verification code is[:\s]*(\d{6})", body, re.IGNORECASE)
                 if match:
                     code = match.group(1)
-                    print(f"  ✓ found code: {code}")
+                    print(f"  {_c('green', '✓')} found code: {code}")
                     imap.logout()
                     return code
             imap.logout()
         except Exception as e:
-            print(f"  IMAP error: {e}")
-        print(f"  no code yet, retrying in 5s...")
+            print(f"  {_c('yellow', '[IMAP]')} error: {_short(e, 80)}")
+        print(_c("dim", "  no code yet, retrying in 5s..."))
         time.sleep(5)
     raise TimeoutError("Did not receive verification code within timeout")
 
 
 def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str,
                                  email: str, password: str) -> dict:
-    print("\n[Step 8] POST verifyEmailRegTicket (creating account)...")
+    print(f"\n{_c('cyan', '[Step 8]')} POST verifyEmailRegTicket (creating account)…")
     # Re-encrypt fresh (different AES key + EUI per request)
     out = encrypt_form_fields({"email": email, "password": password})
     eui = out["EUI"]
@@ -472,20 +511,20 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str,
     )
     text = resp.text
     print(f"  status: {resp.status_code}")
-    print(f"  raw response: {text[:500]}")
+    print(f"  raw response: {_short(text, 150)}")
     set_cookies = resp.headers.get_list("Set-Cookie") if hasattr(resp.headers, "get_list") else []
     if set_cookies:
         print(f"  response set-cookies ({len(set_cookies)}):")
         for sc in set_cookies:
-            print(f"    {sc[:150]}")
+            print(f"    {_short(sc, 120)}")
     try:
         data = parse_xiaomi(text)
     except json.JSONDecodeError as e:
         raise RegisterError(
             f"verifyEmailRegTicket returned non-JSON: {e}; "
-            f"status={resp.status_code}; body={text[:300]}"
+            f"status={resp.status_code}; body={_short(text, 200)}"
         )
-    print(f"  parsed: {data}")
+    print(f"  parsed: {_short(data, 150)}")
 
     code_val = data.get("code")
     desc = data.get("description", "")
@@ -529,12 +568,12 @@ def register(email: str | None = None, password: str | None = None) -> dict:
     if not CAPSOLVER_API_KEY:
         raise RuntimeError("CAPSOLVER_API_KEY not set")
 
-    print("=" * 60)
-    print("Xiaomi Account Registration — CapSolver edition")
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", "Xiaomi Account Registration — CapSolver edition"))
     print(f"Email:    {_email}")
     print(f"Password: {'*' * len(_password)}")
     print(f"Proxy:    {PROXY_URL if USE_PROXY else '(none)'}")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
 
     session = make_session()
 
@@ -548,10 +587,10 @@ def register(email: str | None = None, password: str | None = None) -> dict:
         for mid in ids:
             imap.store(mid, "+FLAGS", "\\Seen")
         if ids:
-            print(f"\n[cleanup] marked {len(ids)} old Xiaomi emails as read")
+            print(_c("dim", f"\n[cleanup] marked {len(ids)} old Xiaomi emails as read"))
         imap.logout()
     except Exception as e:
-        print(f"\n[cleanup] error: {e}")
+        print(_c("yellow", f"\n[cleanup] error: {_short(e, 80)}"))
 
     step1_warmup(session)
 
@@ -564,9 +603,9 @@ def register(email: str | None = None, password: str | None = None) -> dict:
             vtoken = step4_recaptcha_verify(session, e_token, g_recaptcha)
             break
         except (RegisterError, RuntimeError, TimeoutError) as e:
-            print(f"\n  attempt {attempt + 1} failed: {e}")
+            print(_c("red", f"\n  attempt {attempt + 1} failed: {_short(e, 120)}"))
             if attempt < 3:
-                print("  retrying from step 2 with new e_token...")
+                print(_c("dim", "  retrying from step 2 with new e_token..."))
                 time.sleep(2)
             else:
                 raise
@@ -576,7 +615,7 @@ def register(email: str | None = None, password: str | None = None) -> dict:
     code = step7_read_imap_code(_email)
     step8_verify_email_reg_ticket(session, code, _email, _password)
 
-    print("\nAccount created successfully! Fetching cookies...")
+    print(f"\n{_c('green', '✓')} Account created successfully! Fetching cookies…")
 
     # Extract only the 4 Xiaomi session cookies needed for SSO/refresh
     cookies = {}
@@ -592,11 +631,11 @@ def register(email: str | None = None, password: str | None = None) -> dict:
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
-    print("\n" + "=" * 60)
-    print("ACCOUNT CREATED SUCCESSFULLY!")
-    print("=" * 60)
-    print(f"Email:    {EMAIL}")
-    print(f"Cookies:  {json.dumps(cookies, indent=2)}")
+    print("\n" + _c("cyan", "=" * 60))
+    print(_c("bold", _c("green", "ACCOUNT CREATED SUCCESSFULLY!")))
+    print(_c("cyan", "=" * 60))
+    print(f"Email:    {_email}")
+    print(f"Cookies:  {_short(json.dumps(cookies, indent=2), 200)}")
 
     # NOTE: tidak save ke xiaomi_account.json di sini — caller (e2e.py / batch.py)
     # yang handle saving agar tidak overwrite array existing accounts.
@@ -607,5 +646,5 @@ if __name__ == "__main__":
     try:
         register()
     except Exception as e:
-        print(f"\n[FAIL] {type(e).__name__}: {e}")
+        print(_c("red", f"\n[FAIL] {type(e).__name__}: {_short(e, 200)}"))
         raise SystemExit(1)

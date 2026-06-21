@@ -38,10 +38,35 @@ from dotenv import load_dotenv
 
 from .register import register, RegisterError
 from .bot import login_with_cookies, sso_to_mimo, MIMO_BASE
+from ._ansi import C
 from .e2e import save_account_to_files, check_agreement
 from curl_cffi import requests as cffi_requests
 
 load_dotenv()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Color helper (TTY-aware — no-op kalau stdout di-pipe)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_USE_COLOR = sys.stdout.isatty()
+_PALETTE = {
+    "reset":  C.RESET,
+    "bold":   C.BOLD,
+    "dim":    C.DIM,
+    "gray":   C.GRAY,
+    "red":    C.RED,
+    "green":  C.GREEN,
+    "yellow": C.YELLOW,
+    "cyan":   C.CYAN,
+}
+
+
+def _c(name: str, s: str) -> str:
+    """Wrap string dengan ANSI color, no-op kalau stdout bukan TTY."""
+    if not _USE_COLOR:
+        return s
+    return f"{_PALETTE[name]}{s}{C.RESET}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -130,36 +155,36 @@ def process_one(
 
     try:
         # Step 1: Register
-        print(f"\n[REGISTER] {email}")
+        print(f"\n{_c('cyan', '[REGISTER]')} {email}")
         account = register(email=email, password=password)
-        print(f"  ✓ registered, cookies: {list(account['cookies'].keys())}")
+        print(f"  {_c('green', '✓')} registered, cookies: {list(account['cookies'].keys())}")
 
         # Step 2: Login pakai existing cookies
-        print(f"[LOGIN] {email}")
+        print(f"{_c('cyan', '[LOGIN]')} {email}")
         login_data = login_with_cookies(account)
 
         # Step 3: SSO ke MiMo
-        print(f"[SSO] {email}")
+        print(f"{_c('cyan', '[SSO]')} {email}")
         sso = sso_to_mimo(login_data)
         if not sso:
             raise RuntimeError("SSO failed")
         mimo_session = sso["session"]
 
         # Step 4: Load profile
-        print(f"[PROFILE] {email}")
+        print(f"{_c('cyan', '[PROFILE]')} {email}")
         r = mimo_session.get(f"{MIMO_BASE}/api/v1/userProfile", impersonate="chrome124")
         if r.status_code != 200:
             raise RuntimeError(f"profile failed: {r.status_code}")
         profile = r.json().get("data", {})
 
         # Step 5: Check agreement
-        print(f"[AGREEMENT] {email}")
+        print(f"{_c('cyan', '[AGREEMENT]')} {email}")
         agreed = check_agreement(mimo_session)
         if not agreed:
             raise RuntimeError("agreement belum di-accept — skip API key")
 
         # Step 6: Create API key
-        print(f"[APIKEY] {email} (name={api_key_name!r})")
+        print(f"{_c('cyan', '[APIKEY]')} {email} (name={api_key_name!r})")
         jar = getattr(mimo_session.cookies, "jar", mimo_session.cookies)
         ph = next((c.value for c in jar if c.name == "api-platform_ph"), None)
         if not ph:
@@ -181,7 +206,7 @@ def process_one(
         if data.get("code") != 0:
             raise RuntimeError(f"create apiKey error: {data}")
         api_key_data = data["data"]
-        print(f"  ✓ api key id={api_key_data['id']} {api_key_data['apiKey'][:25]}…")
+        print(f"  {_c('green', '✓')} api key id={api_key_data['id']} {api_key_data['apiKey'][:25]}…")
 
         # Step 7: Save to files
         save_account_to_files(account, profile, api_key_data)
@@ -200,7 +225,7 @@ def process_one(
             "error":       f"{type(e).__name__}: {e}",
             "finished_at": utcnow_iso(),
         })
-        print(f"  ✗ FAILED: {type(e).__name__}: {e}")
+        print(f"  {_c('red', '✗ FAILED')}: {type(e).__name__}: {e}")
         return result
 
 
@@ -247,15 +272,15 @@ def run(
     if from_jsonl:
         emails = load_jsonl_emails(from_jsonl)
         if not emails:
-            print(f"[FAIL] no valid emails in {from_jsonl}")
+            print(_c("red", f"[FAIL] no valid emails in {from_jsonl}"))
             return []
         print(f"[bulk] loaded {len(emails)} emails dari {from_jsonl}")
     elif email_domain:
         emails = [generate_email(email_domain) for _ in range(count)]
         print(f"[bulk] generate {count} emails di {email_domain}")
     else:
-        print("[FAIL] provide --count + --email-domain, OR --from-jsonl, "
-              "OR set EMAIL_DOMAIN env")
+        print(_c("red", "[FAIL] provide --count + --email-domain, OR --from-jsonl, "
+                          "OR set EMAIL_DOMAIN env"))
         return []
 
     # ── Resume: skip emails yang sudah ada di output file ──────────────
@@ -264,7 +289,7 @@ def run(
     if already:
         before = len(emails)
         emails = [e for e in emails if e not in already]
-        print(f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)")
+        print(_c("dim", f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)"))
     if not emails:
         print("[bulk] no new emails to process — done!")
         return []
@@ -276,9 +301,9 @@ def run(
 
     # ── Plan ───────────────────────────────────────────────────────────
     print()
-    print("=" * 60)
-    print(f"BULK REGISTER: {len(emails)} akun sequential")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", f"BULK REGISTER: {len(emails)} akun sequential"))
+    print(_c("cyan", "=" * 60))
     print(f"  Email domain    : {email_domain}")
     print(f"  API key name    : {api_key_name}")
     print(f"  Password        : {'random per akun' if use_random_password else 'XIAOMI_PASSWORD env'}")
@@ -286,9 +311,9 @@ def run(
     print(f"  Output          : {out_path}")
     print(f"  Resume mode     : skip kalau sudah ada API key")
     print(f"  Estimate time   : ~{(len(emails) * (delay_min + delay_max) // 2) // 60} min")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
     if dry_run:
-        print("\n[DRY RUN] Sample emails:")
+        print(f"\n{_c('yellow', '[DRY RUN]')} Sample emails:")
         for e in emails[:5]:
             print(f"  {e}")
         if len(emails) > 5:
@@ -300,9 +325,9 @@ def run(
     success = failed = 0
     total = len(emails)
     for i, email in enumerate(emails, 1):
-        print(f"\n{'=' * 60}")
-        print(f"[{i}/{total}] PROCESSING {email}")
-        print(f"{'=' * 60}")
+        print(f"\n{_c('dim', '=' * 60)}")
+        print(f"{_c('cyan', f'[{i}/{total}]')} PROCESSING {email}")
+        print(f"{_c('dim', '=' * 60)}")
 
         # Random password per akun kalau env kosong
         this_password = generate_password() if use_random_password else password
@@ -318,27 +343,27 @@ def run(
         # Delay ke akun berikutnya (kalau bukan yang terakhir)
         if i < total:
             delay = random.randint(delay_min, delay_max)
-            print(f"\n[sleep] {delay}s → next akun...")
+            print(_c("dim", f"\n[sleep] {delay}s → next akun..."))
             time.sleep(delay)
 
     # ── Summary ────────────────────────────────────────────────────────
     print()
-    print("=" * 60)
-    print("BULK SUMMARY")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
+    print(_c("bold", "BULK SUMMARY"))
+    print(_c("cyan", "=" * 60))
     print(f"  Total  : {total}")
-    print(f"  Success: {success}")
-    print(f"  Failed : {failed}")
+    print(f"  Success: {_c('green', str(success))}")
+    print(f"  Failed : {_c('red' if failed else 'dim', str(failed))}")
     print(f"  Output : {out_path}")
-    print("=" * 60)
+    print(_c("cyan", "=" * 60))
 
     # Save bulk run log (separate dari xiaomi_account.json)
     log_path = Path("bulk_run.log.jsonl")
     with log_path.open("a") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
-    print(f"  Run log: {log_path.absolute()}")
-    print("=" * 60)
+    print(_c("dim", f"  Run log: {log_path.absolute()}"))
+    print(_c("cyan", "=" * 60))
 
     return results
 
