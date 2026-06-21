@@ -111,11 +111,11 @@ def test_register_account_success(monkeypatch):
     monkeypatch.setenv("IMAP_USER", "x")
     monkeypatch.setenv("IMAP_PASS", "y")
 
-    def fake_register():
-        return {"email": "x@y.com", "password": "p", "cookies": {"a": "b"},
-                "created_at": "2026-01-01T00:00:00Z"}
+    def fake_register(email=None, password=None):
+        return {"email": email or "x@y.com", "password": password or "p",
+                "cookies": {"a": "b"}, "created_at": "2026-01-01T00:00:00Z"}
 
-    monkeypatch.setattr("mimo.batch.register_one", fake_register)
+    monkeypatch.setattr("mimo.batch.register", fake_register)
     result = batch.register_account("x@y.com", "mypw123", {})
     assert result["status"] == "success"
     assert result["email"] == "x@y.com"
@@ -128,11 +128,11 @@ def test_register_account_failure(monkeypatch):
     monkeypatch.setenv("IMAP_USER", "x")
     monkeypatch.setenv("IMAP_PASS", "y")
 
-    def fake_register():
+    def fake_register(email=None, password=None):
         raise RegisterError("captcha failed")
 
-    monkeypatch.setattr("mimo.batch.register_one", fake_register)
-    result = batch.register_account("x@y.com", "mypw123", {})
+    monkeypatch.setattr("mimo.batch.register", fake_register)
+    result = batch.register_account("x@y.com", "wrongpass", {})
     assert result["status"] == "failed"
     assert "captcha failed" in result["error"]
     assert result["attempt"] == 1
@@ -146,17 +146,16 @@ def test_register_account_restores_env(monkeypatch):
     monkeypatch.setenv("EMAIL", "ORIGINAL@x.com")
     monkeypatch.setenv("XIAOMI_PASSWORD", "ORIG_PASS")
 
-    def fake_register():
-        # Verify env was overridden
-        import os
-        assert os.environ["EMAIL"] == "NEW@y.com"
-        assert os.environ["XIAOMI_PASSWORD"] == "NEW_PASS"
-        return {"email": "NEW@y.com", "password": "NEW_PASS",
+    def fake_register(email=None, password=None):
+        # Verify args were passed
+        assert email == "NEW@y.com"
+        assert password == "NEW_PASS"
+        return {"email": email, "password": password,
                 "cookies": {}, "created_at": ""}
 
-    monkeypatch.setattr("mimo.batch.register_one", fake_register)
+    monkeypatch.setattr("mimo.batch.register", fake_register)
     batch.register_account("NEW@y.com", "NEW_PASS", {})
-    # After call, original values restored
+    # After call, original env values must be intact
     import os
     assert os.environ["EMAIL"] == "ORIGINAL@x.com"
     assert os.environ["XIAOMI_PASSWORD"] == "ORIG_PASS"

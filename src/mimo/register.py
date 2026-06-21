@@ -62,7 +62,9 @@ VwIDAQAB
 AES_IV    = b"0102030405060708"
 KEY_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*"
 
-EMAIL    = os.getenv("EMAIL", f"miacc{int(time.time())}@example.com")
+# ── Defaults from env (untuk standalone CLI) ───────────────────────────────
+_DEFAULT_EMAIL = f"miacc{int(time.time())}@example.com"
+EMAIL    = os.getenv("EMAIL", _DEFAULT_EMAIL)
 PASSWORD = os.getenv("XIAOMI_PASSWORD", "")
 
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
@@ -300,9 +302,16 @@ def step4_recaptcha_verify(session: cffi_requests.Session, e_token: str, g_recap
     return vtoken
 
 
-def step5_encrypt() -> tuple[str, str, str]:
+def step5_encrypt(email: str = None, password: str = None) -> tuple[str, str, str]:
+    """Encrypt email+password (EUI) untuk step 6.
+
+    Default: pakai module EMAIL/PASSWORD (untuk standalone CLI).
+    Override: pass explicit email/password (untuk batch).
+    """
+    e = email or EMAIL
+    p = password or PASSWORD
     print("\n[Step 5] Encrypt email+password (EUI)...")
-    out = encrypt_form_fields({"email": EMAIL, "password": PASSWORD})
+    out = encrypt_form_fields({"email": e, "password": p})
     eui = out["EUI"]
     enc_email = out["encryptedParams"]["email"]
     enc_password = out["encryptedParams"]["password"]
@@ -349,8 +358,8 @@ def step6_send_email_reg_ticket(session: cffi_requests.Session, vtoken: str,
     return data
 
 
-def step7_read_imap_code(timeout: int = 120) -> str:
-    print(f"\n[Step 7] Read 6-digit code from IMAP for {EMAIL}...")
+def step7_read_imap_code(email: str, timeout: int = 120) -> str:
+    print(f"\n[Step 7] Read 6-digit code from IMAP for {email}...")
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -363,7 +372,7 @@ def step7_read_imap_code(timeout: int = 120) -> str:
                 _, raw_data = imap.fetch(msg_id, "(RFC822)")
                 msg = email_lib.message_from_bytes(raw_data[0][1])
                 to_addr = (msg.get("To", "") or "").lower()
-                if EMAIL.lower() not in to_addr:
+                if email.lower() not in to_addr:
                     continue
                 # Decode body
                 body = ""
@@ -393,10 +402,11 @@ def step7_read_imap_code(timeout: int = 120) -> str:
     raise TimeoutError("Did not receive verification code within timeout")
 
 
-def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> dict:
+def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str,
+                                 email: str, password: str) -> dict:
     print("\n[Step 8] POST verifyEmailRegTicket (creating account)...")
     # Re-encrypt fresh (different AES key + EUI per request)
-    out = encrypt_form_fields({"email": EMAIL, "password": PASSWORD})
+    out = encrypt_form_fields({"email": email, "password": password})
     eui = out["EUI"]
     enc_email = out["encryptedParams"]["email"]
     enc_password = out["encryptedParams"]["password"]
@@ -415,7 +425,7 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> 
         "referer": (
             "https://global.account.xiaomi.com/fe/service/register/email/verify"
             "?_locale=en&_uRegion=ID"
-            f"&_user={quote(EMAIL, safe='')}"
+            f"&_user={quote(email, safe='')}"
             "&_agreementChecked=true"
         ),
         "user-agent": (
@@ -488,10 +498,19 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str) -> 
 
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
-def register() -> dict:
-    """Execute 8-step registration. Return dict with credentials + cookies."""
-    if not PASSWORD:
-        raise RuntimeError("XIAOMI_PASSWORD not set")
+def register(email: str | None = None, password: str | None = None) -> dict:
+    """Execute 8-step registration. Return dict with credentials + cookies.
+
+    Args:
+        email: Override EMAIL env var (untuk batch / programmatic use).
+        password: Override XIAOMI_PASSWORD env var.
+    """
+    # Resolve credentials — params override env, env overrides default
+    _email = email or EMAIL
+    _password = password or PASSWORD
+
+    if not _password:
+        raise RuntimeError("XIAOMI_PASSWORD not set (env or parameter)")
     if not IMAP_USER or not IMAP_PASS:
         raise RuntimeError("IMAP_USER and IMAP_PASS required for OTP")
     if not CAPSOLVER_API_KEY:
@@ -499,8 +518,8 @@ def register() -> dict:
 
     print("=" * 60)
     print("Xiaomi Account Registration — CapSolver edition")
-    print(f"Email:    {EMAIL}")
-    print(f"Password: {'*' * len(PASSWORD)}")
+    print(f"Email:    {_email}")
+    print(f"Password: {'*' * len(_password)}")
     print(f"Proxy:    {PROXY_URL if USE_PROXY else '(none)'}")
     print("=" * 60)
 
@@ -539,24 +558,23 @@ def register() -> dict:
             else:
                 raise
 
-    eui, enc_email, enc_password = step5_encrypt()
+    eui, enc_email, enc_password = step5_encrypt(_email, _password)
     step6_send_email_reg_ticket(session, vtoken, eui, enc_email, enc_password)
-    code = step7_read_imap_code()
-    step8_verify_email_reg_ticket(session, code)
+    code = step7_read_imap_code(_email)
+    step8_verify_email_reg_ticket(session, code, _email, _password)
 
     print("\nAccount created successfully! Fetching cookies...")
 
-    # Extract cookies
-    # cookies = {c.name: c.value for c in session.cookies}
+    # Extract only the 4 Xiaomi session cookies needed for SSO/refresh
     cookies = {}
-    for name in ("passToken", "serviceToken", "cUserId", "userId", ):
+    for name in ("passToken", "serviceToken", "cUserId", "userId"):
         val = session.cookies.get(name, domain="account.xiaomi.com") or session.cookies.get(name)
         if val:
             cookies[name] = val
 
     result = {
-        "email": EMAIL,
-        "password": PASSWORD,
+        "email": _email,
+        "password": _password,
         "cookies": cookies,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }

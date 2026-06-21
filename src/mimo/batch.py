@@ -42,7 +42,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from .email_gen import generate_emails
-from .register import register as register_one, RegisterError
+from .register import register, RegisterError
 
 
 def utcnow_iso() -> str:
@@ -83,15 +83,13 @@ def build_email_list(args, env: dict) -> list[str]:
 
 
 def register_account(email: str, password: str, env: dict, attempt: int = 0) -> dict:
-    """Override env, panggil register(), restore."""
-    saved = {}
-    for k in ("EMAIL", "XIAOMI_PASSWORD"):
-        if k in os.environ:
-            saved[k] = os.environ[k]
-    os.environ["EMAIL"] = email
-    os.environ["XIAOMI_PASSWORD"] = password
+    """Override EMAIL/PASSWORD via parameter, call register(), return result.
+
+    register() now accepts email/password params, so we don't need to
+    fiddle with os.environ — just pass directly.
+    """
     try:
-        result = register_one()
+        result = register(email=email, password=password)
         return {
             "email": email,
             "password": password,
@@ -109,11 +107,6 @@ def register_account(email: str, password: str, env: dict, attempt: int = 0) -> 
             "failed_at": utcnow_iso(),
             "attempt": attempt + 1,
         }
-    finally:
-        for k, v in saved.items():
-            os.environ[k] = v
-        if k not in saved and k in os.environ:
-            del os.environ[k]
 
 
 def main():
