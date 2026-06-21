@@ -97,6 +97,70 @@ def load_profile(session) -> dict:
     return profile
 
 
+def save_account_to_files(account: dict, profile: dict, api_key_data: dict = None) -> None:
+    """Save account ke xiaomi_account.json (array) + accounts.txt (pipe-separated).
+
+    xiaomi_account.json : JSON array of {email, password, cookies, profile, api_key, timestamp}
+    accounts.txt       : pipe-separated 'email|password|apiKey' per line
+
+    Appends (tidak overwrite). Kalau file belum ada → create baru.
+    """
+    now_iso = json.dumps({"ts": "now"})  # placeholder; use proper timestamp
+    import datetime as _dt
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    record = {
+        "email":      account["email"],
+        "password":   account["password"],
+        "cookies":    account.get("cookies", {}),
+        "profile":    profile,
+        "api_key":    api_key_data,
+        "created_at": ts,
+    }
+
+    # ── xiaomi_account.json : append to array ──────────────────────────
+    json_path = Path("xiaomi_account.json")
+    if json_path.exists():
+        try:
+            existing = json.loads(json_path.read_text())
+            if not isinstance(existing, list):
+                # Convert old single-object format to array
+                existing = [existing]
+        except json.JSONDecodeError:
+            existing = []
+    else:
+        existing = []
+
+    # Replace kalau email sudah ada (update), else append
+    existing = [r for r in existing if r.get("email") != account["email"]]
+    existing.append(record)
+    json_path.write_text(json.dumps(existing, indent=2))
+    try:
+        json_path.chmod(0o600)
+    except Exception:
+        pass
+    print(f"  [saved] {json_path} ({len(existing)} akun total)")
+
+    # ── accounts.txt : email|password|apikey per line ───────────────────
+    txt_path = Path("accounts.txt")
+    # Read existing
+    if txt_path.exists():
+        lines = [l for l in txt_path.read_text().splitlines() if l.strip()]
+        # Replace kalau email sudah ada
+        lines = [l for l in lines if not l.startswith(account["email"] + "|")]
+    else:
+        lines = []
+    # Add new line
+    api_key_str = api_key_data.get("apiKey", "") if api_key_data else ""
+    lines.append(f"{account['email']}|{account['password']}|{api_key_str}")
+    txt_path.write_text("\n".join(lines) + "\n")
+    try:
+        txt_path.chmod(0o600)
+    except Exception:
+        pass
+    print(f"  [saved] {txt_path} ({len(lines)} akun total)")
+
+
 def list_api_keys(session) -> list[dict]:
     """GET /api/v1/apiKeys — list existing API keys."""
     print("  [list] GET /api/v1/apiKeys…", end=" ")
@@ -199,8 +263,6 @@ def run(email: str = None, password: str = None,
             if not password:
                 raise RuntimeError("no password saved in account record")
             account = register(email=email, password=password)
-            Path("xiaomi_account.json").write_text(json.dumps(account, indent=2))
-            print(f"  [saved] xiaomi_account.json")
     elif email:
         password = password or None  # will use XIAOMI_PASSWORD env if None
         print(f"[1/5] Register akun baru: {email}")
@@ -209,8 +271,7 @@ def run(email: str = None, password: str = None,
         except RegisterError as e:
             print(f"  ✗ register failed: {e}", file=sys.stderr)
             raise
-        Path("xiaomi_account.json").write_text(json.dumps(account, indent=2))
-        print(f"  [saved] xiaomi_account.json")
+
     else:
         raise RuntimeError("provide --email + --password, OR --account <file>")
 
@@ -260,6 +321,10 @@ def run(email: str = None, password: str = None,
             print(f"  API Key ID   : {api_key_result.get('id')}")
         else:
             print(f"  API Keys     : {len(api_key_result.get('existing', []))} existing")
+
+    # ── Save to files ────────────────────────────────────────────────
+    print()
+    save_account_to_files(account, profile, api_key_result)
 
     print("=" * 60)
     print("  NOTE: bind_referral OFF — tidak apply UltraSpeed")

@@ -598,9 +598,8 @@ def register(email: str | None = None, password: str | None = None) -> dict:
     print(f"Email:    {EMAIL}")
     print(f"Cookies:  {json.dumps(cookies, indent=2)}")
 
-    out_path = Path("xiaomi_account.json")
-    out_path.write_text(json.dumps(result, indent=2))
-    print(f"\nSaved to {out_path.absolute()}")
+    # NOTE: tidak save ke xiaomi_account.json di sini — caller (e2e.py / batch.py)
+    # yang handle saving agar tidak overwrite array existing accounts.
     return result
 
 
