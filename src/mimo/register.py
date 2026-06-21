@@ -687,7 +687,7 @@ def register(email: str | None = None, password: str | None = None,
     print(_c("bold", "Xiaomi Account Registration — CapSolver edition"))
     print(f"Email:    {_email}")
     print(f"Password: {'*' * len(_password)}")
-    print(f"Proxy:    {_short_proxy(proxy) if proxy else (PROXY_URL if USE_PROXY else '(none)')}")
+    print(f"Proxy:    {_c('green' if (proxy or (USE_PROXY)) else 'red', 'ON' if (proxy or (USE_PROXY)) else 'OFF')}")
     print(_c("cyan", "=" * 60))
 
     session = make_session(proxy=proxy)

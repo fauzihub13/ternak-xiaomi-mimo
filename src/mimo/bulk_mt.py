@@ -394,6 +394,15 @@ def run(
 
 
 def main():
+    banner = f"""
+{_c('cyan', '    __  ____                    ______                __            ')}
+{_c('cyan', '   /  |/  (_)___ ___  ____     / ____/_______  ____ _/ /_____  _____')}
+{_c('cyan', '  / /|_/ / / __ `__ \\/ __ \\   / /   / ___/ _ \\/ __ `/ __/ __ \\/ ___/')}
+{_c('cyan', ' / /  / / / / / / / / /_/ /  / /___/ /  /  __/ /_/ / /_/ /_/ / /    ')}
+{_c('cyan', '/_/  /_/_/_/ /_/ /_/\\____/   \\____/_/   \\___/\\__,_/\\__/\\____/_/     ')}
+    """
+    print(banner)
+    
     ap = argparse.ArgumentParser(
         description="Bulk register + SSO + API key untuk banyak akun "
                     "(MULTI-THREADED). Defaults dari env "
