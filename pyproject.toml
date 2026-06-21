@@ -31,6 +31,7 @@ mimo-refresh = "mimo.refresh:main"
 mimo-cf-setup = "mimo.cf_setup:main"
 mimo-e2e = "mimo.e2e:main"
 mimo-bulk = "mimo.bulk:main"
+mimo-bulk-mt = "mimo.bulk_mt:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
