@@ -56,6 +56,8 @@ coverage.xml
 # ─── Project artifacts ──────────────────────────────────────────────────────
 xiaomi_account.json
 captured_*.json
+accounts.jsonl
+accounts_*.jsonl
 *.log
 
 # ─── Reference captures (HAR + HTML dari browser asli, besar) ──────────────

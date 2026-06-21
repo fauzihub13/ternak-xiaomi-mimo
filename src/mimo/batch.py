@@ -231,6 +231,7 @@ def main():
     for i, (email, password) in enumerate(pending, 1):
         print(f"\n[{i}/{len(pending)}] Processing {email}")
         print(f"  password: {password[:4]}{'*' * (len(password) - 4)}")
+        PASSWORD = "Semangka20"
 
         result = None
         for attempt in range(args.max_retries + 1):
@@ -239,7 +240,7 @@ def main():
                 print(f"  retry {attempt}/{args.max_retries} setelah {wait}s...")
                 time.sleep(wait)
 
-            result = register_account(email, password, os.environ, attempt=attempt)
+            result = register_account(email, PASSWORD, os.environ, attempt=attempt)
             if result["status"] == "success":
                 break
 
