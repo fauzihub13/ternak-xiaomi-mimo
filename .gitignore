@@ -58,6 +58,8 @@ xiaomi_account.json
 captured_*.json
 accounts.jsonl
 accounts_*.jsonl
+mimo_api_key.json
+mimo_api_key_*.json
 *.log
 
 # ─── Reference captures (HAR + HTML dari browser asli, besar) ──────────────
