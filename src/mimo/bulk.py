@@ -210,8 +210,8 @@ def process_one(
 
 def run(
     count: int = 1,
-    delay_min: int = 300,
-    delay_max: int = 900,
+    delay_min: int = 3,
+    delay_max: int = 10,
     *,
     email_domain: str = None,
     api_key_name: str = None,
