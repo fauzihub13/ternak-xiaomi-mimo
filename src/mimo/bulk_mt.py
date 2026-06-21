@@ -9,15 +9,24 @@ Mengimpor dari module existing (bulk.py, e2e.py) — tidak duplicate logic.
 Karena work bersifat I/O-bound (network calls), threading memberi speedup besar.
 Lock dipakai hanya untuk shared file I/O (xiaomi_account.json, accounts.txt).
 
+Proxy configuration (via env atau CLI):
+  - env PROXY_URL=http://user:pass@host:port  (single proxy — DataImpulse format)
+  - CLI --proxy URL                          (override env)
+  - env USE_PROXY=0                          (disable proxy total)
+
 Usage:
-    # Default: 5 workers, 1 akun
+    # Pakai env PROXY_URL
     python -m mimo.bulk_mt --count 5 --email-domain example.com
 
     # 10 akun paralel dengan 4 workers
     python -m mimo.bulk_mt --count 10 --workers 4 --email-domain example.com
 
-    # Dari JSONL
-    python -m mimo.bulk_mt --from-jsonl accounts.jsonl --workers 3
+    # CLI proxy override
+    python -m mimo.bulk_mt --count 3 --email-domain example.com \\
+        --proxy http://user:pass@gw.dataimpulse.com:823
+
+    # Disable proxy (env USE_PROXY=0)
+    USE_PROXY=0 python -m mimo.bulk_mt --count 3 --email-domain example.com
 
     # Dry run
     python -m mimo.bulk_mt --count 5 --email-domain example.com --dry-run
@@ -45,6 +54,7 @@ from .bulk import (
     utcnow_iso,
 )
 from .e2e import save_account_to_files
+from .register import check_proxy
 from ._ansi import C
 
 load_dotenv()
@@ -99,6 +109,15 @@ def _short(s, maxlen: int = 100) -> str:
     return s
 
 
+def _short_proxy(url: str | None) -> str:
+    """Mask user:pass di proxy URL untuk logging aman."""
+    if not url:
+        return ""
+    # Ganti user:pass@ jadi ***@ supaya credential tidak bocor di log
+    import re as _re
+    return _re.sub(r"(://)[^@/]+@", r"\1***@", url)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Thread-safe wrapper untuk save_account_to_files
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -125,32 +144,59 @@ _bulk_mod.save_account_to_files = _save_account_thread_safe
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _worker(idx: int, total: int, email: str, password: str, api_key_name: str,
-            *, dry_run: bool = False) -> dict:
-    """Run process_one() dengan prefixed logging.
+            *, dry_run: bool = False,
+            proxy: str | None = None,
+            max_retries: int = 5) -> dict:
+    """Run process_one() dengan retry pada proxy yang sama.
 
-    idx: 1-based index akun
+    Logic per akun:
+      - attempt 1..max_retries (5x default):
+        - panggil process_one(proxy=...)
+        - kalau success → return
+        - kalau fail → tunggu 2s → retry
+      - Kalau max_retries habis → return last failed result
     """
     tag = _c("cyan", f"[{idx}/{total}]")
+    proxy_tag = _c("dim", f" via {_short_proxy(proxy)}") if proxy else ""
+
     tprint(f"\n{_c('dim', '=' * 60)}")
-    tprint(f"{tag} {_c('bold', 'START')} {email}")
+    tprint(f"{tag} {_c('bold', 'START')} {email}{proxy_tag}")
     tprint(f"{_c('dim', '=' * 60)}")
 
     t0 = time.time()
-    result = process_one(email, password, api_key_name, dry_run=dry_run)
+    last_result: dict = {}
+
+    for attempt in range(1, max_retries + 1):
+        result = process_one(email, password, api_key_name,
+                             dry_run=dry_run, proxy=proxy)
+        status = result.get("status", "unknown")
+
+        if status == "success":
+            elapsed = time.time() - t0
+            tprint(f"{tag} {_c('green', '✓ SUCCESS')} {email} "
+                   f"{_c('dim', f'({elapsed:.1f}s, attempt {attempt})')}")
+            return result
+
+        if status == "dry_run":
+            tprint(f"{tag} {_c('yellow', '~ DRY RUN')} {email}")
+            return result
+
+        last_result = result
+        err = _short(result.get("error", "unknown"), maxlen=100)
+
+        if attempt < max_retries:
+            wait = 2
+            tprint(f"{tag} {_c('yellow', f'⟳ retry {attempt + 1}/{max_retries}')} "
+                   f"in {wait}s — {err}")
+            time.sleep(wait)
+        else:
+            tprint(f"{tag} {_c('red', f'✗ {max_retries}× failed')} — {err}")
+
     elapsed = time.time() - t0
-
-    status = result.get("status", "unknown")
-    if status == "success":
-        tprint(f"{tag} {_c('green', '✓ SUCCESS')} {email} "
-               f"{_c('dim', f'({elapsed:.1f}s)')}")
-    elif status == "dry_run":
-        tprint(f"{tag} {_c('yellow', '~ DRY RUN')} {email}")
-    else:
-        err = _short(result.get("error", "unknown"), maxlen=120)
-        tprint(f"{tag} {_c('red', '✗ FAILED')} {email} "
-               f"{_c('dim', f'({elapsed:.1f}s)')} — {err}")
-
-    return result
+    err = _short(last_result.get("error", "unknown"), maxlen=120) if last_result else "unknown"
+    tprint(f"{tag} {_c('red', '✗ FAILED')} {email} "
+           f"{_c('dim', f'({elapsed:.1f}s, {max_retries} attempts)')} — {err}")
+    return last_result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -167,6 +213,8 @@ def run(
     from_jsonl: str = None,
     out_path: str = "xiaomi_account.json",
     dry_run: bool = False,
+    proxy: str | None = None,
+    max_retries: int = 5,
 ) -> list[dict]:
     """Run bulk processing (multi-threaded).
 
@@ -179,6 +227,8 @@ def run(
         from_jsonl: path ke JSONL file dengan email list (override generate)
         out_path: output JSON file (default: xiaomi_account.json)
         dry_run: cetak plan tanpa eksekusi
+        proxy: single proxy URL override (prioritas tertinggi). Default: env PROXY_URL.
+        max_retries: max retry dengan proxy yang sama (default 5)
 
     Returns: list of result dicts (satu per akun, urutan不一定 sesuai input)
     """
@@ -190,6 +240,32 @@ def run(
     if password is None:
         password = os.getenv("XIAOMI_PASSWORD", "").strip()
 
+    # ── Resolve proxy (CLI > env > none) ──────────────────────────────
+    # Env vars:
+    #   USE_PROXY=0   → disable proxy (overrides semua)
+    #   PROXY_URL     → single proxy URL (cth: http://user:pass@host:port)
+    use_proxy_env = os.getenv("USE_PROXY", "1").strip() != "0"
+    if proxy is None:
+        proxy = os.getenv("PROXY_URL", "").strip() or None
+    proxy_src = "CLI --proxy" if proxy and "--proxy" in sys.argv else \
+                ("env PROXY_URL" if proxy else "none")
+    if not use_proxy_env:
+        proxy = None
+        tprint(_c("dim", "[proxy] USE_PROXY=0 — disabled by env"))
+    elif not proxy:
+        tprint(_c("yellow", "[proxy] PROXY_URL env not set — multi-threading bisa kena IP-block"))
+    else:
+        #  tprint(f"[proxy] ({proxy_src}): {_short_proxy(proxy)}")
+        tprint('\n')
+
+    # ── Proxy health check (skip kalau PROXY_CHECK=0) ──────────────────
+    if proxy and os.getenv("PROXY_CHECK", "1").strip() != "0":
+        # tprint(f"[proxy-check] verifying {_short_proxy(proxy)}…")
+        ok = check_proxy(proxy)
+        if not ok:
+            tprint(_c("yellow", "[proxy-check] proxy mungkin mati — "
+                                 "lanjutkan dengan risiko gagal"))
+
     # ── Build email list ──────────────────────────────────────────────
     if from_jsonl:
         emails = load_jsonl_emails(from_jsonl)
@@ -199,7 +275,7 @@ def run(
         tprint(f"[bulk_mt] loaded {len(emails)} emails dari {from_jsonl}")
     elif email_domain:
         emails = [generate_email(email_domain) for _ in range(count)]
-        tprint(f"[bulk_mt] generate {count} emails di {email_domain}")
+        # tprint(f"[bulk_mt] generate {count} emails di {email_domain}")
     else:
         tprint(_c("red", "[FAIL] provide --count + --email-domain, OR --from-jsonl, "
                           "OR set EMAIL_DOMAIN env"))
@@ -211,7 +287,7 @@ def run(
     if already:
         before = len(emails)
         emails = [e for e in emails if e not in already]
-        tprint(f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)")
+        # tprint(f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)")
     if not emails:
         tprint("[bulk_mt] no new emails to process — done!")
         return []
@@ -232,6 +308,11 @@ def run(
     print(f"  API key name    : {api_key_name}")
     print(f"  Password        : {'random per akun' if use_random_password else 'XIAOMI_PASSWORD env'}")
     print(f"  Workers         : {workers} concurrent threads")
+    if proxy:
+        print(f"  Proxy           : {_short_proxy(proxy)}  ({proxy_src})")
+    else:
+        print(f"  Proxy           : {_c('yellow', '(none)')} — bisa kena IP-block")
+    print(f"  Retry policy    : {max_retries} attempts/akun")
     print(f"  Output          : {out_path}")
     print(f"  Resume mode     : skip kalau sudah ada API key")
     print(f"  File I/O lock   : {_c('green', 'aktif')} (save_account_to_files serialized)")
@@ -256,9 +337,11 @@ def run(
     t_start = time.time()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Pass single proxy ke semua worker. Worker yang manage retry count.
         futures = {
             pool.submit(_worker, i + 1, total, email, pw, api_key_name,
-                        dry_run=dry_run): email
+                        dry_run=dry_run, proxy=proxy,
+                        max_retries=max_retries): email
             for i, (email, pw) in enumerate(zip(emails, passwords))
         }
 
@@ -344,6 +427,11 @@ Contoh:
                     help="output JSON file (default: xiaomi_account.json)")
     ap.add_argument("--dry-run", action="store_true",
                     help="cetak plan tanpa eksekusi")
+    ap.add_argument("--proxy", default=None,
+                    help="single proxy URL override (cth: http://user:pass@gw.dataimpulse.com:823). "
+                         "Default: env PROXY_URL. Set USE_PROXY=0 untuk disable.")
+    ap.add_argument("--retries", type=int, default=5,
+                    help="max retry per akun sebelum mark failed (default 5)")
     args = ap.parse_args()
 
     # Validate: minimal salah satu mode
@@ -359,6 +447,8 @@ Contoh:
         from_jsonl=args.from_jsonl,
         out_path=args.out,
         dry_run=args.dry_run,
+        proxy=args.proxy,
+        max_retries=args.retries,
     )
 
     # Exit code: 0 kalau semua success, 1 kalau ada failed

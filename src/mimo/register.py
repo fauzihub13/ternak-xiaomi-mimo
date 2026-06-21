@@ -117,11 +117,23 @@ def _short(s, maxlen: int = 60) -> str:
         return s[:maxlen].rstrip() + "…"
     return s
 
+def _short_proxy(url: str | None) -> str:
+    """Mask user:pass di proxy URL untuk logging aman."""
+    if not url:
+        return ""
+    return re.sub(r"(://)[^@/]+@", r"\1***@", url)
+
 
 # ─── HTTP SESSION ────────────────────────────────────────────────────────────
-def make_session() -> cffi_requests.Session:
+def make_session(proxy: str | None = None) -> cffi_requests.Session:
+    """Build impersonated session. `proxy` (kalau ada) override env PROXY_URL.
+
+    Priority: explicit `proxy` arg > env PROXY_URL (kalau USE_PROXY=1) > none.
+    """
     kwargs = {"impersonate": "chrome124"}
-    if USE_PROXY and PROXY_URL:
+    if proxy:
+        kwargs["proxies"] = {"https": proxy, "http": proxy}
+    elif USE_PROXY and PROXY_URL:
         kwargs["proxies"] = {"https": PROXY_URL, "http": PROXY_URL}
     s = cffi_requests.Session(**kwargs)
     s.headers.update({
@@ -133,6 +145,51 @@ def make_session() -> cffi_requests.Session:
         "Accept-Language": "en-US,en;q=0.9",
     })
     return s
+
+
+def check_proxy(proxy: str | None) -> bool:
+    """Verify proxy works by hitting api.ipify.org (IP) + ip-api.com (region).
+
+    Prints detected IP, country, region, city, ISP. Return True kalau berhasil.
+    Kalau proxy=None → return True (no-op, no proxy configured).
+    Kalau error → return False tapi jangan raise (caller decide).
+    """
+    if not proxy:
+        return True
+    try:
+        s = make_session(proxy=proxy)
+        # 1) Get public IP via api.ipify.org
+        r = s.get("https://api.ipify.org?format=json", timeout=10,
+                  impersonate="chrome124")
+        if r.status_code != 200:
+            print(_c("yellow",
+                      f"[proxy-check] ✗ api.ipify.org returned {r.status_code} — "
+                      f"proxy may be dead"))
+            return False
+        ip = (r.json() or {}).get("ip", "")
+        if not ip:
+            print(_c("yellow", "[proxy-check] ✗ no IP in response — proxy may be dead"))
+            return False
+        # 2) Get region via ip-api.com (free, no key, ~45 req/min limit)
+        try:
+            r2 = s.get(f"http://ip-api.com/json/{ip}", timeout=10,
+                       impersonate="chrome124")
+            info = (r2.json() or {}) if r2.status_code == 200 else {}
+            if info.get("status") == "success":
+                print(f"{_c('cyan', '[proxy-check]')} ✓ IP: {ip}  "
+                      f"({info.get('country', '?')}, "
+                      f"{info.get('regionName', '?')}, "
+                      f"{info.get('city', '?')}, "
+                      f"ISP: {info.get('isp', '?')})")
+                return True
+        except Exception:
+            pass
+        # Fallback: cuma print IP tanpa region
+        print(f"  {_c('cyan', '[proxy-check]')} ✓ IP: {ip}  (region lookup skipped)")
+        return True
+    except Exception as e:
+        print(_c("yellow", f"[proxy-check] ✗ FAILED: {_short(e, 80)}"))
+        return False
 
 
 # ─── CRYPTO HELPERS ──────────────────────────────────────────────────────────
@@ -605,12 +662,15 @@ def step8_verify_email_reg_ticket(session: cffi_requests.Session, code: str,
 
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
-def register(email: str | None = None, password: str | None = None) -> dict:
+def register(email: str | None = None, password: str | None = None,
+             proxy: str | None = None) -> dict:
     """Execute 8-step registration. Return dict with credentials + cookies.
 
     Args:
         email: Override EMAIL env var (untuk batch / programmatic use).
         password: Override XIAOMI_PASSWORD env var.
+        proxy: Override env PROXY_URL untuk session ini (untuk per-worker proxy
+               rotation dari ProxyPool). None = pakai env.
     """
     # Resolve credentials — params override env, env overrides default
     _email = email or EMAIL
@@ -627,10 +687,10 @@ def register(email: str | None = None, password: str | None = None) -> dict:
     print(_c("bold", "Xiaomi Account Registration — CapSolver edition"))
     print(f"Email:    {_email}")
     print(f"Password: {'*' * len(_password)}")
-    print(f"Proxy:    {PROXY_URL if USE_PROXY else '(none)'}")
+    print(f"Proxy:    {_short_proxy(proxy) if proxy else (PROXY_URL if USE_PROXY else '(none)')}")
     print(_c("cyan", "=" * 60))
 
-    session = make_session()
+    session = make_session(proxy=proxy)
 
     # Pre-cleanup: mark old Xiaomi emails as read
     try:

@@ -4,11 +4,15 @@ Perbedaan dari `e2e.py` (single akun):
   - e2e.py : 1 akun, full pipeline
   - bulk.py: N akun, sequential, dengan rate limiting + resume
 
-Mengimpor dari module existing (register.py, bot.py, e2e.py) — tidak duplicate logic.
+Proxy configuration (via env atau CLI, sama seperti bulk_mt):
+  - env PROXY_URL=http://user:pass@host:port  (single proxy — DataImpulse format)
+  - CLI --proxy URL                          (override env)
+  - env USE_PROXY=0                          (disable proxy total)
+  - env PROXY_CHECK=0                        (skip proxy health check)
 
 Usage:
-    # Zero args (pakai env defaults)
-    python -m mimo.bulk
+    # Pakai env PROXY_URL
+    python -m mimo.bulk --count 5 --email-domain example.com
 
     # Custom count + delay
     python -m mimo.bulk --count 5 --delay-min 300 --delay-max 900
@@ -19,6 +23,10 @@ Usage:
     # Process existing JSONL file
     python -m mimo.bulk --from-jsonl accounts.jsonl
 
+    # CLI proxy override
+    python -m mimo.bulk --count 3 --email-domain example.com \\
+        --proxy http://user:pass@gw.dataimpulse.com:823
+
     # Dry run
     python -m mimo.bulk --count 3 --dry-run
 """
@@ -27,6 +35,7 @@ import argparse
 import json
 import os
 import random
+import re
 import string
 import sys
 import time
@@ -36,7 +45,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-from .register import register, RegisterError
+from .register import register, RegisterError, check_proxy
 from .bot import login_with_cookies, sso_to_mimo, MIMO_BASE
 from ._ansi import C
 from .e2e import save_account_to_files, check_agreement
@@ -67,6 +76,13 @@ def _c(name: str, s: str) -> str:
     if not _USE_COLOR:
         return s
     return f"{_PALETTE[name]}{s}{C.RESET}"
+
+
+def _short_proxy(url: str | None) -> str:
+    """Mask user:pass di proxy URL untuk logging aman."""
+    if not url:
+        return ""
+    return re.sub(r"(://)[^@/]+@", r"\1***@", url)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -140,8 +156,14 @@ def process_one(
     api_key_name: str,
     *,
     dry_run: bool = False,
+    proxy: str | None = None,
 ) -> dict:
-    """Full pipeline untuk 1 akun. Return dict dengan status + artifacts."""
+    """Full pipeline untuk 1 akun. Return dict dengan status + artifacts.
+
+    Args:
+        proxy: Proxy URL untuk register step (per-worker rotation). None = env.
+               Catatan: login/SSO/MiMo pakai env PROXY_URL (backward compat).
+    """
     result = {
         "email":    email,
         "status":   "pending",
@@ -154,9 +176,9 @@ def process_one(
         return result
 
     try:
-        # Step 1: Register
+        # Step 1: Register (pakai proxy kalau ada)
         print(f"\n{_c('cyan', '[REGISTER]')} {email}")
-        account = register(email=email, password=password)
+        account = register(email=email, password=password, proxy=proxy)
         print(f"  {_c('green', '✓')} registered, cookies: {list(account['cookies'].keys())}")
 
         # Step 2: Login pakai existing cookies
@@ -244,6 +266,8 @@ def run(
     from_jsonl: str = None,
     out_path: str = "xiaomi_account.json",
     dry_run: bool = False,
+    proxy: str | None = None,
+    max_retries: int = 5,
 ) -> list[dict]:
     """Run bulk processing.
 
@@ -257,6 +281,8 @@ def run(
         from_jsonl: path ke JSONL file dengan email list (override generate)
         out_path: output JSON file (default: xiaomi_account.json)
         dry_run: cetak plan tanpa eksekusi
+        proxy: single proxy URL override (default: env PROXY_URL)
+        max_retries: max retry per akun dengan proxy sama sebelum mark failed
 
     Returns: list of result dicts (satu per akun)
     """
@@ -268,6 +294,33 @@ def run(
     if password is None:
         password = os.getenv("XIAOMI_PASSWORD", "").strip()
 
+    # ── Resolve proxy (CLI > env > none) ──────────────────────────────
+    # Env vars:
+    #   USE_PROXY=0   → disable proxy (overrides semua)
+    #   PROXY_URL     → single proxy URL (cth: http://user:pass@host:port)
+    use_proxy_env = os.getenv("USE_PROXY", "1").strip() != "0"
+    if proxy is None:
+        proxy = os.getenv("PROXY_URL", "").strip() or None
+    proxy_src = "CLI --proxy" if proxy and "--proxy" in sys.argv else \
+                ("env PROXY_URL" if proxy else "none")
+    if not use_proxy_env:
+        proxy = None
+        print(_c("dim", "[proxy] USE_PROXY=0 — disabled by env"))
+    elif not proxy:
+        print(_c("yellow", "[proxy] none — register bisa kena IP-block"))
+    else:
+        # print(f"[proxy] ({proxy_src}): {_short_proxy(proxy)}")
+        print('\n')
+        
+
+    # ── Proxy health check (skip kalau PROXY_CHECK=0) ──────────────────
+    if proxy and os.getenv("PROXY_CHECK", "1").strip() != "0":
+        # print(f"[proxy-check] verifying {_short_proxy(proxy)}…")
+        ok = check_proxy(proxy)
+        if not ok:
+            print(_c("yellow", "[proxy-check] proxy mungkin mati — "
+                                "lanjutkan dengan risiko gagal"))
+
     # ── Build email list ──────────────────────────────────────────────
     if from_jsonl:
         emails = load_jsonl_emails(from_jsonl)
@@ -277,7 +330,7 @@ def run(
         print(f"[bulk] loaded {len(emails)} emails dari {from_jsonl}")
     elif email_domain:
         emails = [generate_email(email_domain) for _ in range(count)]
-        print(f"[bulk] generate {count} emails di {email_domain}")
+        # print(f"[bulk] generate {count} emails di {email_domain}")
     else:
         print(_c("red", "[FAIL] provide --count + --email-domain, OR --from-jsonl, "
                           "OR set EMAIL_DOMAIN env"))
@@ -289,7 +342,7 @@ def run(
     if already:
         before = len(emails)
         emails = [e for e in emails if e not in already]
-        print(_c("dim", f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)"))
+        # print(_c("dim", f"[resume] skip {before - len(emails)} akun sudah di {out_path} (sudah ada API key)"))
     if not emails:
         print("[bulk] no new emails to process — done!")
         return []
@@ -308,6 +361,11 @@ def run(
     print(f"  API key name    : {api_key_name}")
     print(f"  Password        : {'random per akun' if use_random_password else 'XIAOMI_PASSWORD env'}")
     print(f"  Delay per akun  : {delay_min}-{delay_max}s ({delay_min // 60}-{delay_max // 60} min)")
+    if proxy:
+        print(f"  Proxy           : {_short_proxy(proxy)}  ({proxy_src})")
+    else:
+        print(f"  Proxy           : {_c('yellow', '(none)')} — bisa kena IP-block")
+    print(f"  Retry policy    : {max_retries} attempts/akun")
     print(f"  Output          : {out_path}")
     print(f"  Resume mode     : skip kalau sudah ada API key")
     print(f"  Estimate time   : ~{(len(emails) * (delay_min + delay_max) // 2) // 60} min")
@@ -325,14 +383,33 @@ def run(
     success = failed = 0
     total = len(emails)
     for i, email in enumerate(emails, 1):
+        proxy_tag = _c("dim", f" via {_short_proxy(proxy)}") if proxy else ""
         print(f"\n{_c('dim', '=' * 60)}")
-        print(f"{_c('cyan', f'[{i}/{total}]')} PROCESSING {email}")
+        print(f"{_c('cyan', f'[{i}/{total}]')} PROCESSING {email}{proxy_tag}")
         print(f"{_c('dim', '=' * 60)}")
 
         # Random password per akun kalau env kosong
         this_password = generate_password() if use_random_password else password
 
-        result = process_one(email, this_password, api_key_name)
+        # Retry loop (5x default dengan proxy sama)
+        result = None
+        for attempt in range(1, max_retries + 1):
+            result = process_one(email, this_password, api_key_name, proxy=proxy)
+            status = result.get("status", "unknown")
+
+            if status == "success":
+                print(_c("green", f"  ✓ SUCCESS {email} (attempt {attempt})"))
+                break
+
+            err = result.get("error", "unknown")
+            err_short = re.sub(r"\s+", " ", str(err))[:100]
+            if attempt < max_retries:
+                wait = 2
+                print(_c("yellow", f"  ⟳ retry {attempt + 1}/{max_retries} in {wait}s — {err_short}"))
+                time.sleep(wait)
+            else:
+                print(_c("red", f"  ✗ {max_retries}× failed — {err_short}"))
+
         results.append(result)
 
         if result["status"] == "success":
@@ -409,6 +486,11 @@ Contoh:
                     help="output JSON file (default: xiaomi_account.json)")
     ap.add_argument("--dry-run", action="store_true",
                     help="cetak plan tanpa eksekusi")
+    ap.add_argument("--proxy", default=None,
+                    help="single proxy URL override (cth: http://user:pass@gw.dataimpulse.com:823). "
+                         "Default: env PROXY_URL. Set USE_PROXY=0 untuk disable.")
+    ap.add_argument("--retries", type=int, default=5,
+                    help="max retry per akun sebelum mark failed (default 5)")
     args = ap.parse_args()
 
     # Validate: minimal salah satu mode
@@ -425,6 +507,8 @@ Contoh:
         from_jsonl=args.from_jsonl,
         out_path=args.out,
         dry_run=args.dry_run,
+        proxy=args.proxy,
+        max_retries=args.retries,
     )
 
     # Exit code: 0 kalau semua success, 1 kalau ada failed
