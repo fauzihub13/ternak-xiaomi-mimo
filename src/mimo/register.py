@@ -410,21 +410,75 @@ def step6_send_email_reg_ticket(session: cffi_requests.Session, vtoken: str,
     return data
 
 
+XIAOMI_SENDER = "noreply@notice.xiaomi.com"
+
+# Header yang kemungkinan berisi alamat penerima sebenarnya.
+# Gmail/catch-all router kadang menulis recipient asli di Delivered-To / X-Original-To
+# dan mengubah `To:` jadi `undisclosed-recipients:;` — kalau cuma cek `To:` saja,
+# multi-threader akan saling rebut dan banyak yang timeout.
+_RECIPIENT_HEADERS = (
+    "To",
+    "Delivered-To",
+    "X-Original-To",
+    "Envelope-To",
+    "X-Apparently-To",
+    "X-Forwarded-To",
+    "Cc",
+    "Bcc",
+)
+
+
+def _parse_email_addr(s: str) -> str:
+    """Extract bare email address dari string `'Name <addr@x.com>'` atau `'addr@x.com'`."""
+    if not s:
+        return ""
+    m = re.search(r"[\w.+-]+@[\w.-]+", s)
+    return m.group(0).lower() if m else ""
+
+
+def _msg_sender(msg) -> str:
+    """Ambil bare email address dari header `From` (handle 'MiMo <noreply@...>')."""
+    return _parse_email_addr(msg.get("From", ""))
+
+
+def _msg_recipients(msg) -> list[str]:
+    """Ambil semua kandidat recipient address dari header yang umum.
+
+    Multi-thread safe: setiap email cocok kalau target address muncul
+    PERSIS (exact) di salah satu header di atas.
+    """
+    addrs: list[str] = []
+    for hdr in _RECIPIENT_HEADERS:
+        val = msg.get(hdr, "") or ""
+        for part in val.split(","):
+            addr = _parse_email_addr(part)
+            if addr and addr not in addrs:
+                addrs.append(addr)
+    return addrs
+
+
 def step7_read_imap_code(email: str, timeout: int = 120) -> str:
     print(f"\n{_c('cyan', '[Step 7]')} Read 6-digit code from IMAP for {email}…")
+    target = email.lower().strip()
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
             imap.login(IMAP_USER, IMAP_PASS)
             imap.select("INBOX")
-            _, msg_data = imap.search(None, '(UNSEEN FROM "noreply@notice.xiaomi.com")')
+            # Drop UNSEEN filter — race condition antar koneksi IMAP concurrent.
+            # Filter hanya dari sender (exact) + recipient match (exact) di Python.
+            _, msg_data = imap.search(None, f'(FROM "{XIAOMI_SENDER}")')
             msg_ids = msg_data[0].split()
-            for msg_id in reversed(msg_ids[-20:]):
+            for msg_id in reversed(msg_ids[-30:]):
                 _, raw_data = imap.fetch(msg_id, "(RFC822)")
                 msg = email_lib.message_from_bytes(raw_data[0][1])
-                to_addr = (msg.get("To", "") or "").lower()
-                if email.lower() not in to_addr:
+                # Strict sender (exact) — substring match bisa catch email
+                # yang forward/reply dari noreply (false positive)
+                if _msg_sender(msg) != XIAOMI_SENDER:
+                    continue
+                # Strict recipient (target email ada PERSIS di salah satu header)
+                if target not in _msg_recipients(msg):
                     continue
                 # Decode body
                 body = ""
@@ -443,7 +497,8 @@ def step7_read_imap_code(email: str, timeout: int = 120) -> str:
                 match = re.search(r"verification code is[:\s]*(\d{6})", body, re.IGNORECASE)
                 if match:
                     code = match.group(1)
-                    print(f"  {_c('green', '✓')} found code: {code}")
+                    print(f"  {_c('green', '✓')} found code: {code} "
+                          f"{(msg_id.decode() if isinstance(msg_id, bytes) else msg_id)!r}")
                     imap.logout()
                     return code
             imap.logout()
