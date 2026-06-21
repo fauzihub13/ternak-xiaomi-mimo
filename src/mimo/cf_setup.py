@@ -38,11 +38,88 @@ CF_API_BASE = "https://api.cloudflare.com/client/v4"
 
 
 # ── HTTP helper ─────────────────────────────────────────────────────────────
-def _headers(token: str) -> dict:
+def _headers(token: str, *, email: str | None = None,
+             api_key: str | None = None) -> dict:
+    """Build CF API auth headers.
+
+    Dua mode auth:
+      1. Bearer Token (scoped)  →  Authorization: Bearer <token>
+      2. Global API Key         →  X-Auth-Email + X-Auth-Key
+
+    Priority: kalau `email` AND `api_key` keduanya diset → mode 2.
+    Else → mode 1 (token).
+    """
+    if email and api_key:
+        return {
+            "X-Auth-Email": email,
+            "X-Auth-Key": api_key,
+            "Content-Type": "application/json",
+        }
+    if not token:
+        raise ValueError("_headers butuh token, atau (email + api_key)")
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
-def _request(method: str, url: str, token: str, **kwargs) -> dict:
+class CFAuth:
+    """Auth context for Cloudflare API calls.
+
+    Dua mode:
+      - Bearer (scoped token): token=<token>
+      - Global API Key: token=<api_key>, email=<email>
+
+    Usage:
+        auth = CFAuth.from_env()  # baca dari env
+        list_destinations(account_id, auth)
+    """
+    def __init__(self, token: str = "", email: str = "", api_key: str = ""):
+        self.token = token
+        self.email = email
+        self.api_key = api_key
+        if not self.token and (self.email and self.api_key):
+            # Global API Key mode
+            pass
+        elif not self.token and not (self.email and self.api_key):
+            raise ValueError("CFAuth butuh (token) atau (email + api_key)")
+
+    @classmethod
+    def from_env(cls) -> "CFAuth":
+        """Bikin CFAuth dari env vars."""
+        token = os.getenv("CF_API_TOKEN", "")
+        api_key = os.getenv("CF_API_KEY", "")
+        email = os.getenv("CF_EMAIL", "")
+        if token:
+            return cls(token=token)
+        if api_key and email:
+            return cls(api_key=api_key, email=email)
+        raise ValueError(
+            "Set CF_API_TOKEN (scoped) atau CF_API_KEY + CF_EMAIL (global)"
+        )
+
+    @property
+    def mode(self) -> str:
+        if self.token:
+            return "token"
+        return "global_api_key"
+
+    def headers(self) -> dict:
+        return _headers(self.token, email=self.email or None, api_key=self.api_key or None)
+
+
+def _request(method: str, url: str, auth: "CFAuth | str", **kwargs) -> dict:
+    """Auth-aware HTTP request. Backward compat: accept string as token."""
+    if isinstance(auth, str):
+        headers = _headers(auth)
+    else:
+        headers = auth.headers()
+    r = requests.request(method, url, headers=headers, timeout=30, **kwargs)
+    try:
+        return r.json()
+    except Exception:
+        return {"success": False, "errors": [{"message": f"non-json response (HTTP {r.status_code})"}]}
+
+
+def _request_legacy(method: str, url: str, token: str, **kwargs) -> dict:
+    """Backward compat: pass token as Bearer."""
     r = requests.request(method, url, headers=_headers(token), timeout=30, **kwargs)
     try:
         return r.json()
@@ -51,43 +128,43 @@ def _request(method: str, url: str, token: str, **kwargs) -> dict:
 
 
 # ── Destinations ────────────────────────────────────────────────────────────
-def list_destinations(account_id: str, token: str) -> list[dict]:
+def list_destinations(account_id: str, auth: "CFAuth | str") -> list[dict]:
     """List semua destination addresses."""
     url = f"{CF_API_BASE}/accounts/{account_id}/email/routing/addresses"
-    data = _request("GET", url, token)
+    data = _request("GET", url, auth)
     if not data.get("success"):
         raise RuntimeError(f"list_destinations failed: {data.get('errors')}")
     return data.get("result", [])
 
 
-def create_destination(account_id: str, token: str, email: str) -> dict:
+def create_destination(account_id: str, auth: "CFAuth | str", email: str) -> dict:
     """Create destination address. Email butuh verifikasi manual oleh user."""
     url = f"{CF_API_BASE}/accounts/{account_id}/email/routing/addresses"
-    data = _request("POST", url, token, json={"email": email})
+    data = _request("POST", url, auth, json={"email": email})
     if not data.get("success"):
         raise RuntimeError(f"create_destination failed: {data.get('errors')}")
     return data["result"]
 
 
-def ensure_destination(account_id: str, token: str, email: str) -> dict:
+def ensure_destination(account_id: str, auth: "CFAuth | str", email: str) -> dict:
     """Idempotent: create kalau belum ada, return existing kalau sudah."""
-    for d in list_destinations(account_id, token):
+    for d in list_destinations(account_id, auth):
         if d.get("email", "").lower() == email.lower():
             return d
-    return create_destination(account_id, token, email)
+    return create_destination(account_id, auth, email)
 
 
 # ── Routing rules ───────────────────────────────────────────────────────────
-def list_rules(zone_id: str, token: str) -> list[dict]:
+def list_rules(zone_id: str, auth: "CFAuth | str") -> list[dict]:
     """List semua routing rules."""
     url = f"{CF_API_BASE}/zones/{zone_id}/email/routing/rules"
-    data = _request("GET", url, token)
+    data = _request("GET", url, auth)
     if not data.get("success"):
         raise RuntimeError(f"list_rules failed: {data.get('errors')}")
     return data.get("result", [])
 
 
-def create_rule(zone_id: str, token: str, *,
+def create_rule(zone_id: str, auth: "CFAuth | str", *,
                 name: str, matchers: list[dict], actions: list[dict],
                 enabled: bool = True, priority: int = 0) -> dict:
     """Create satu routing rule."""
@@ -99,29 +176,29 @@ def create_rule(zone_id: str, token: str, *,
         "matchers": matchers,
         "actions": actions,
     }
-    data = _request("POST", url, token, json=payload)
+    data = _request("POST", url, auth, json=payload)
     if not data.get("success"):
         raise RuntimeError(f"create_rule failed: {data.get('errors')}")
     return data["result"]
 
 
-def delete_rule(zone_id: str, token: str, rule_id: str) -> dict:
+def delete_rule(zone_id: str, auth: "CFAuth | str", rule_id: str) -> dict:
     url = f"{CF_API_BASE}/zones/{zone_id}/email/routing/rules/{rule_id}"
-    data = _request("DELETE", url, token)
+    data = _request("DELETE", url, auth)
     if not data.get("success"):
         raise RuntimeError(f"delete_rule failed: {data.get('errors')}")
     return data
 
 
-def ensure_catch_all(zone_id: str, token: str, dest_email: str) -> dict:
+def ensure_catch_all(zone_id: str, auth: "CFAuth | str", dest_email: str) -> dict:
     """Idempotent: create catch-all rule kalau belum ada."""
-    for rule in list_rules(zone_id, token):
+    for rule in list_rules(zone_id, auth):
         matchers = rule.get("matchers", [])
         is_catchall = any(m.get("type") == "all" for m in matchers)
         if is_catchall:
             return rule  # already exists
     return create_rule(
-        zone_id, token,
+        zone_id, auth,
         name="Catch-all to Gmail",
         matchers=[{"type": "all"}],
         actions=[{"type": "forward", "value": [dest_email]}],
@@ -131,10 +208,10 @@ def ensure_catch_all(zone_id: str, token: str, dest_email: str) -> dict:
 
 
 # ── Zone / Account lookup ───────────────────────────────────────────────────
-def list_zones(token: str, name: str | None = None) -> list[dict]:
+def list_zones(auth: "CFAuth | str", name: str | None = None) -> list[dict]:
     """List zones (domains). Filter by name kalau diberikan."""
     url = f"{CF_API_BASE}/zones?per_page=50"
-    data = _request("GET", url, token)
+    data = _request("GET", url, auth)
     if not data.get("success"):
         raise RuntimeError(f"list_zones failed: {data.get('errors')}")
     zones = data.get("result", [])
@@ -143,10 +220,10 @@ def list_zones(token: str, name: str | None = None) -> list[dict]:
     return zones
 
 
-def get_account_id(token: str) -> str:
+def get_account_id(auth: "CFAuth | str") -> str:
     """Ambil Account ID dari token user info."""
     url = f"{CF_API_BASE}/user"
-    data = _request("GET", url, token)
+    data = _request("GET", url, auth)
     if not data.get("success"):
         raise RuntimeError(f"get_account_id failed: {data.get('errors')}")
     # 'accounts' may contain multiple; ambil yang 'type' == 'standard' atau first
@@ -157,7 +234,7 @@ def get_account_id(token: str) -> str:
 
 
 # ── Setup orchestration ─────────────────────────────────────────────────────
-def setup_catch_all(token: str, zone_id: str, account_id: str,
+def setup_catch_all(auth: "CFAuth | str", zone_id: str, account_id: str,
                     dest_email: str, dry_run: bool = False) -> dict:
     """One-shot setup: ensure destination + catch-all rule exists.
 
@@ -166,7 +243,7 @@ def setup_catch_all(token: str, zone_id: str, account_id: str,
     result = {"destination": None, "rule": None, "already_existed": False}
 
     # 1. Destination
-    existing_dests = list_destinations(account_id, token)
+    existing_dests = list_destinations(account_id, auth)
     dest = next((d for d in existing_dests if d["email"].lower() == dest_email.lower()), None)
     if dest:
         print(f"  ✓ destination already exists: {dest['email']} (verified={dest.get('verified')})")
@@ -178,7 +255,7 @@ def setup_catch_all(token: str, zone_id: str, account_id: str,
             result["destination"] = dest
         else:
             print(f"  creating destination: {dest_email}…")
-            dest = create_destination(account_id, token, dest_email)
+            dest = create_destination(account_id, auth, dest_email)
             print(f"  ✓ destination created (cek email untuk verifikasi)")
             result["destination"] = dest
 
@@ -191,7 +268,7 @@ def setup_catch_all(token: str, zone_id: str, account_id: str,
         print("  → skip catch-all creation (destination belum verified)")
         return result
 
-    existing_rules = list_rules(zone_id, token)
+    existing_rules = list_rules(zone_id, auth)
     catchall = next((r for r in existing_rules
                      if any(m.get("type") == "all" for m in r.get("matchers", []))), None)
     if catchall:
@@ -205,7 +282,7 @@ def setup_catch_all(token: str, zone_id: str, account_id: str,
         else:
             print(f"  creating catch-all rule → {dest_email}…")
             rule = create_rule(
-                zone_id, token,
+                zone_id, auth,
                 name="Catch-all to Gmail",
                 matchers=[{"type": "all"}],
                 actions=[{"type": "forward", "value": [dest_email]}],
@@ -216,15 +293,16 @@ def setup_catch_all(token: str, zone_id: str, account_id: str,
 
 
 # ── Status print ────────────────────────────────────────────────────────────
-def print_status(token: str, zone_id: str, account_id: str) -> None:
+def print_status(auth: "CFAuth | str", zone_id: str, account_id: str) -> None:
     print("=" * 60)
     print("Cloudflare Email Routing — Status")
     print("=" * 60)
     print(f"Zone ID   : {zone_id}")
     print(f"Account ID: {account_id}")
+    print(f"Auth mode : {auth.mode}")
     print()
     print("Destinations:")
-    dests = list_destinations(account_id, token)
+    dests = list_destinations(account_id, auth)
     if not dests:
         print("  (none)")
     for d in dests:
@@ -232,7 +310,7 @@ def print_status(token: str, zone_id: str, account_id: str) -> None:
         print(f"  {v} {d['email']}  (created={d.get('created','')[:10]})")
     print()
     print("Routing rules:")
-    rules = list_rules(zone_id, token)
+    rules = list_rules(zone_id, auth)
     if not rules:
         print("  (none)")
     for r in rules:
@@ -253,6 +331,10 @@ def main():
     )
     ap.add_argument("--token", default=os.getenv("CF_API_TOKEN", ""),
                     help="Cloudflare API token (atau set CF_API_TOKEN)")
+    ap.add_argument("--api-key", default=os.getenv("CF_API_KEY", ""),
+                    help="Global API Key (fallback: dengan --email)")
+    ap.add_argument("--email", default=os.getenv("CF_EMAIL", ""),
+                    help="Email akun Cloudflare (untuk Global API Key)")
     ap.add_argument("--zone-id", default=os.getenv("CF_ZONE_ID", ""),
                     help="Zone ID (atau set CF_ZONE_ID)")
     ap.add_argument("--account-id", default=os.getenv("CF_ACCOUNT_ID", ""),
@@ -270,21 +352,31 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    if not args.token:
-        err_msg = ("CF_API_TOKEN belum di-set. Buat di "
-                   "https://dash.cloudflare.com/profile/api-tokens")
-        print(err_msg, file=sys.stderr)
+    # Resolve auth
+    try:
+        if args.token:
+            auth = CFAuth(token=args.token)
+        elif args.api_key and args.email:
+            auth = CFAuth(api_key=args.api_key, email=args.email)
+        else:
+            auth = CFAuth.from_env()
+    except ValueError as e:
+        print(f"[FAIL] {e}", file=sys.stderr)
+        print("Set salah satu:", file=sys.stderr)
+        print("  - CF_API_TOKEN  (scoped API Token)", file=sys.stderr)
+        print("  - CF_API_KEY + CF_EMAIL  (Global API Key + email login)", file=sys.stderr)
         sys.exit(1)
+    print(f"[*] auth mode: {auth.mode}")
 
     # Resolve zone_id & account_id
     if not args.account_id:
         print("[*] detecting account_id dari token…")
-        args.account_id = get_account_id(args.token)
+        args.account_id = get_account_id(auth)
         print(f"    account_id = {args.account_id}")
 
     if args.list_zones:
         print("Zones:")
-        for z in list_zones(args.token):
+        for z in list_zones(auth):
             print(f"  {z['name']:<40}  id={z['id']}")
         return
 
@@ -294,7 +386,7 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
         print(f"[*] mencari zone untuk domain='{args.domain}'…")
-        zones = list_zones(args.token, args.domain)
+        zones = list_zones(auth, args.domain)
         if not zones:
             print(f"  domain '{args.domain}' tidak ditemukan di account ini",
                   file=sys.stderr)
@@ -304,7 +396,7 @@ def main():
 
     # Action
     if args.status:
-        print_status(args.token, args.zone_id, args.account_id)
+        print_status(auth, args.zone_id, args.account_id)
         return
 
     # Setup (default)
@@ -314,7 +406,7 @@ def main():
         sys.exit(1)
     print(f"[*] setup catch-all → {args.dest}")
     result = setup_catch_all(
-        args.token, args.zone_id, args.account_id,
+        auth, args.zone_id, args.account_id,
         args.dest, dry_run=args.dry_run,
     )
     if result["rule"]:

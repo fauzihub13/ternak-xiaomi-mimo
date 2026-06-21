@@ -49,6 +49,9 @@ coverage.xml
 .env
 .env.local
 .env.*.local
+.envasda
+.envs
+.envbackup
 
 # ─── Project artifacts ──────────────────────────────────────────────────────
 xiaomi_account.json

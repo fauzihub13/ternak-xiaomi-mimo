@@ -1,168 +1,191 @@
 # Cloudflare Email Routing — API Setup
 
-Setup catch-all via Cloudflare API (no dashboard clicks).
+Setup catch-all via Cloudflare API. **2 cara**:
 
-## Keuntungan vs Dashboard
+- **Cara A (RECOMMENDED): API Token** — scoped, aman, expiration
+- **Cara B: Global API Key** — full access, lebih gampang setup, less secure
 
-- ✅ Bulk setup untuk banyak domain sekaligus
-- ✅ Idempotent (cocok untuk CI/CD / re-run aman)
-- ✅ Versionable (commit ke git)
-- ✅ Auto-discover zone ID & account ID
+---
 
-## 1. Buat API Token
+## Cara A — API Token (Recommended)
+
+### 1. Buat API Token
 
 1. Login ke https://dash.cloudflare.com
-2. Buka **My Profile** → **API Tokens** → **Create Token**
-3. Pilih **Custom Token** (bukan template)
-4. Set permission berikut:
+2. **My Profile** → **API Tokens** → **Create Token**
+3. Klik **Custom Token** (atau pakai template "Edit zone DNS" lalu tambahkan permission)
 
-| Scope | Permission |
-|---|---|
-| Account → Account Resources → Account | **Edit** |
-| Zone → Zone Resources → Specific zone → `<domain-anda>` | Read |
-| Zone → Email Routing | **Edit** |
+### 2. Pilih Permissions
 
-5. Klik **Continue to summary** → **Create Token**
-6. Copy token (ditampilkan sekali) — simpan sebagai `CF_API_TOKEN`
+Di bagian **Permissions**, klik **+ Add More** dan pilih 3 permission berikut:
 
-## 2. Dapatkan Zone ID & Account ID
+| Category | Permission | Access |
+|---|---|---|
+| **Account** | Email Routing Addresses | Edit |
+| **Zone** | Zone | Read |
+| **Zone** | Email Routing Rules | Edit |
 
-Opsi A — manual dari dashboard:
-- Klik kanan domain di overview → **Copy Zone ID** → `CF_ZONE_ID`
-- Klik avatar pojok kanan atas → pilih **Account ID** di bagian bawah → `CF_ACCOUNT_ID`
+⚠️ **Nama persis harus "Email Routing Addresses" + "Email Routing Rules"** (bukan "Email Routing" saja — itu permission lain/tidak ada).
+
+### 3. Set Zone Resources
+
+Di bagian **Zone Resources**, pilih **Include → Specific zone → `<domain-anda>`**.
+Kalau Anda punya banyak domain, pilih **All zones** (less secure tapi lebih gampang).
+
+### 4. TTL & Create
+
+- **Client IP Address Filtering**: kosongkan (kecuali mau restrict ke IP tertentu)
+- **TTL**: pilih expiration date (mis. 1 tahun)
+- Klik **Continue to summary** → **Create Token**
+- Copy token (ditampilkan sekali)
+
+### 5. Dapatkan Zone ID
+
+Opsi A — manual:
+- Klik kanan domain di overview Cloudflare → **Copy Zone ID**
 
 Opsi B — via API:
-```bash
-CF_API_TOKEN=<token> python -m mimo.cf_setup --token <token> --list-zones
-```
-
-## 3. Update `.env`
-
-```ini
-CF_API_TOKEN=your_token_here
-CF_ZONE_ID=your_zone_id_here
-CF_ACCOUNT_ID=your_account_id_here     # optional — auto-detect
-CF_DEST_EMAIL=email.anda@gmail.com
-```
-
-## 4. CLI commands
-
-### Setup catch-all (idempotent)
-
-```bash
-# With explicit zone_id
-mimo-cf-setup --token $CF_API_TOKEN --zone-id $CF_ZONE_ID \
-  --dest $CF_DEST_EMAIL
-
-# With domain name (auto-lookup zone_id)
-mimo-cf-setup --token $CF_API_TOKEN --domain mimo.domain-anda.com \
-  --dest $CF_DEST_EMAIL
-
-# Dry run
-mimo-cf-setup --token $CF_API_TOKEN --domain mimo.domain-anda.com \
-  --dest $CF_DEST_EMAIL --dry-run
-```
-
-Output:
-```
-[*] setup catch-all → email.anda@gmail.com
-  creating destination: email.anda@gmail.com…
-  ✓ destination created (cek email untuk verifikasi)
-  ⚠ destination belum verified — buka email email.anda@gmail.com dan klik link
-     Setelah verified, run ulang script ini untuk create catch-all rule
-
-# Setelah verifikasi email, run ulang:
-[*] setup catch-all → email.anda@gmail.com
-  ✓ destination already exists: email.anda@gmail.com (verified=True)
-  creating catch-all rule → email.anda@gmail.com…
-  ✓ catch-all rule created: id=abc123
-```
-
-### Status
-
-```bash
-mimo-cf-setup --token $CF_API_TOKEN --zone-id $CF_ZONE_ID --status
-```
-
-Output:
-```
-============================================================
-Cloudflare Email Routing — Status
-============================================================
-Zone ID   : abc123
-Account ID: xyz789
-
-Destinations:
-  ✓ email.anda@gmail.com  (created=2026-06-21)
-
-Routing rules:
-  ✓ [0] Catch-all to Gmail  match: all=  → forward=['email.anda@gmail.com']
-============================================================
-```
-
-### List zones
-
 ```bash
 mimo-cf-setup --token $CF_API_TOKEN --list-zones
 ```
 
-## 5. Test end-to-end
+### 6. Update `.env`
 
-Setelah setup OK:
-```bash
-# Test IMAP + catch-all
-python -m mimo.setup_test
-
-# Test register 1 akun
-python -m mimo.batch --count 1 --email-strategy catch_all \
-  --email-domain mimo.domain-anda.com
+```ini
+CF_API_TOKEN=your_token_here
+CF_ZONE_ID=your_zone_id_here
+CF_ACCOUNT_ID=your_account_id_here         # auto-detect kalau kosong
+CF_DEST_EMAIL=email.anda@gmail.com
 ```
 
-## API Endpoints (untuk debugging)
+### 7. Run Setup
 
-| Method | URL | Fungsi |
-|---|---|---|
-| GET | `/zones/{zone_id}/email/routing/rules` | List semua rules |
-| POST | `/zones/{zone_id}/email/routing/rules` | Create rule |
-| DELETE | `/zones/{zone_id}/email/routing/rules/{id}` | Delete rule |
-| GET | `/accounts/{account_id}/email/routing/addresses` | List destinations |
-| POST | `/accounts/{account_id}/email/routing/addresses` | Create destination |
-
-curl example:
 ```bash
-TOKEN=your_token
-ZONE=your_zone_id
-ACC=your_account_id
-
-# List rules
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://api.cloudflare.com/client/v4/zones/$ZONE/email/routing/rules" | jq
-
-# List destinations
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://api.cloudflare.com/client/v4/accounts/$ACC/email/routing/addresses" | jq
+mimo-cf-setup --token $CF_API_TOKEN --domain mimo.kamu.com --dest gmail.anda@gmail.com
 ```
 
-## Limit (Free tier)
+---
 
-| Limit | Nilai |
-|---|---|
-| Destinations | 200 verified addresses |
-| Routing rules | Unlimited |
-| Email diteruskan per hari | Tidak ada batas resmi (untuk batch 5-50 akun/hari aman) |
-| Cost | $0 |
+## Cara B — Global API Key (Fallback, Paling Gampang)
+
+⚠️ **Less secure** — full account access. Jangan pakai untuk production/cron di server publik.
+
+### 1. Dapatkan Global API Key
+
+1. Login https://dash.cloudflare.com
+2. Klik **My Profile** → **API Tokens** (scroll ke bawah)
+3. Section **API Keys** → **Global API Key** → **View**
+4. Masukkan password Cloudflare → Copy key
+
+### 2. Dapatkan Email & Zone ID
+
+**Email Anda** = email login Cloudflare (otomatis terdeteksi).
+
+**Zone ID**: cara yang sama — klik kanan domain di overview → **Copy Zone ID**
+
+### 3. Update `.env`
+
+```ini
+CF_API_KEY=your_global_api_key_here        # BUKAN CF_API_TOKEN
+CF_EMAIL=email.login.cloudflare.anda@gmail.com
+CF_ZONE_ID=your_zone_id
+```
+
+### 4. Update `cf_setup.py` untuk support Global API Key
+
+Edit `src/mimo/cf_setup.py`:
+
+```python
+def _headers(token_or_key: str, email: str | None = None) -> dict:
+    """Bearer token (scoped) atau X-Auth-Email + X-Auth-Key (global)."""
+    if email:
+        return {
+            "X-Auth-Email": email,
+            "X-Auth-Key": token_or_key,
+            "Content-Type": "application/json",
+        }
+    return {
+        "Authorization": f"Bearer {token_or_key}",
+        "Content-Type": "application/json",
+    }
+```
+
+Atau pakai environment variables:
+- `CF_API_KEY` — Global API Key
+- `CF_API_TOKEN` — Scoped API Token (preferred)
+
+Dan update CLI untuk handle keduanya.
+
+---
+
+## Setup via Dashboard (Manual, Tanpa API)
+
+Kalau API benar-benar tidak memungkinkan:
+
+1. Cloudflare dashboard → pilih domain → **Email** → **Email Routing** → **Enable**
+2. Tab **Destinations** → **Add destination** → isi Gmail → verify via link
+3. Tab **Routes** → **Catch-all address** → isi Gmail tujuan → Save
+
+Manual OK untuk 1 domain. Kalau banyak domain, pakai API.
+
+---
+
+## Cek MX Records
+
+Setelah setup, verify MX records pointing ke Cloudflare:
+
+```bash
+dig MX domain-anda.com
+```
+
+Harus return:
+```
+domain-anda.com.  300  IN  MX  10 route1.mx.cloudflare.net.
+domain-anda.com.  300  IN  MX  20 route2.mx.cloudflare.net.
+domain-anda.com.  300  IN  MX  30 route3.mx.cloudflare.net.
+```
+
+Kalau masih pointing ke mail server lama (mis. `mx.zoho.com`), tunggu propagasi atau hapus manual.
+
+---
+
+## CLI Commands
+
+```bash
+# Setup catch-all (idempotent)
+mimo-cf-setup --token $CF_API_TOKEN --domain mimo.kamu.com --dest gmail.anda@gmail.com
+
+# Status check
+mimo-cf-setup --token $CF_API_TOKEN --zone-id $CF_ZONE_ID --status
+
+# List semua zone
+mimo-cf-setup --token $CF_API_TOKEN --list-zones
+
+# Dry run
+mimo-cf-setup --token $CF_API_TOKEN --domain mimo.kamu.com --dest gmail.anda@gmail.com --dry-run
+```
+
+---
 
 ## Troubleshooting
 
 ### 403 Forbidden
-- API token tidak punya permission. Buat ulang dengan permission benar.
-- Zone ID salah (token hanya untuk zone tertentu).
+- Token tidak punya permission yang dibutuhkan. Buat ulang dengan 3 permission di atas.
+- Zone ID salah / token di-restrict ke zone lain.
 
 ### "destination belum verified"
-- Cek inbox Gmail Anda
-- Klik link verifikasi dari Cloudflare (subject: "Verify your email address")
+- Cek inbox Gmail → klik link verifikasi Cloudflare
+- Subject biasanya: "Verify your email address" dari `cloudflare.com`
 - Run ulang `mimo-cf-setup` setelah verified
 
-### MX record belum propagate
-- Cloudflare otomatis add MX records, tapi propagasi DNS sampai 24 jam
-- Test: `dig MX domain-anda.com` harus return `cloudflare.net`
+### MX tidak propagate
+- Tunggu 5-30 menit (DNS propagation)
+- Cek di Cloudflare dashboard → DNS → Records → MX records auto-added
+
+### Permission "Email Routing" tidak ketemu
+- **Pastikan ketik "Email Routing Addresses"** (Account) atau **"Email Routing Rules"** (Zone)
+- Bukan "Email Routing" saja — tidak ada di list permission
+
+### Global API Key ditolak
+- Pastikan CF_EMAIL (email login) benar
+- Re-view key kalau lupa (harus re-enter password)

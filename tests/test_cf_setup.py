@@ -14,6 +14,65 @@ def test_headers_bearer():
     assert h["Content-Type"] == "application/json"
 
 
+def test_headers_global_api_key():
+    """Global API Key mode: X-Auth-Email + X-Auth-Key."""
+    h = cf_setup._headers("", email="user@example.com", api_key="abc123")
+    assert h["X-Auth-Email"] == "user@example.com"
+    assert h["X-Auth-Key"] == "abc123"
+    assert "Authorization" not in h
+
+
+def test_headers_no_creds_raises():
+    with pytest.raises(ValueError):
+        cf_setup._headers("")
+
+
+# ── CFAuth class ────────────────────────────────────────────────────────────
+def test_cfauth_token_mode():
+    auth = cf_setup.CFAuth(token="tok123")
+    assert auth.mode == "token"
+    assert auth.headers()["Authorization"] == "Bearer tok123"
+
+
+def test_cfauth_global_key_mode():
+    auth = cf_setup.CFAuth(api_key="key123", email="a@b.com")
+    assert auth.mode == "global_api_key"
+    h = auth.headers()
+    assert h["X-Auth-Email"] == "a@b.com"
+    assert h["X-Auth-Key"] == "key123"
+
+
+def test_cfauth_no_creds_raises():
+    with pytest.raises(ValueError):
+        cf_setup.CFAuth()
+
+
+def test_cfauth_from_env_token(monkeypatch):
+    monkeypatch.setenv("CF_API_TOKEN", "tok_env")
+    monkeypatch.delenv("CF_API_KEY", raising=False)
+    monkeypatch.delenv("CF_EMAIL", raising=False)
+    auth = cf_setup.CFAuth.from_env()
+    assert auth.mode == "token"
+    assert auth.token == "tok_env"
+
+
+def test_cfauth_from_env_global_key(monkeypatch):
+    monkeypatch.delenv("CF_API_TOKEN", raising=False)
+    monkeypatch.setenv("CF_API_KEY", "key_env")
+    monkeypatch.setenv("CF_EMAIL", "user@example.com")
+    auth = cf_setup.CFAuth.from_env()
+    assert auth.mode == "global_api_key"
+    assert auth.api_key == "key_env"
+
+
+def test_cfauth_from_env_no_creds(monkeypatch):
+    monkeypatch.delenv("CF_API_TOKEN", raising=False)
+    monkeypatch.delenv("CF_API_KEY", raising=False)
+    monkeypatch.delenv("CF_EMAIL", raising=False)
+    with pytest.raises(ValueError):
+        cf_setup.CFAuth.from_env()
+
+
 # ── _request (mocked) ───────────────────────────────────────────────────────
 def test_request_get_success(monkeypatch):
     fake_resp = MagicMock()
