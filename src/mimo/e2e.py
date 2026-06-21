@@ -85,7 +85,7 @@ def load_account_file(path: str, row: int = 0) -> dict:
 
 def load_profile(session) -> dict:
     """GET /api/v1/userProfile — verify session + return user data."""
-    print("  [4/5] GET /api/v1/userProfile…", end=" ")
+    print("  [4/6] GET /api/v1/userProfile…", end=" ")
     r = session.get(f"{MIMO_BASE}/api/v1/userProfile", impersonate="chrome124")
     if r.status_code != 200:
         raise RuntimeError(f"profile failed: {r.status_code} {r.text[:200]}")
@@ -95,6 +95,43 @@ def load_profile(session) -> dict:
     profile = data["data"]
     print(f"✓ userId={profile['userId']}")
     return profile
+
+
+def check_agreement(session) -> bool:
+    """Hit /api/v1/agreement + verify profile.agreement=true.
+
+    Returns True kalau agreement sudah di-accept (profile.agreement == true).
+    Returns False kalau agreement belum di-accept (akan skip API key creation).
+    Raises RuntimeError kalau gagal hit endpoint.
+    """
+    # 1. GET /api/v1/agreement — verify endpoint reachable
+    print("  [5a] GET /api/v1/agreement…", end=" ")
+    jar = getattr(session.cookies, "jar", session.cookies)
+    ph = next((c.value for c in jar if c.name == "api-platform_ph"), None)
+    if not ph:
+        raise RuntimeError("no api-platform_ph cookie (SSO may have failed)")
+
+    url = f"{MIMO_BASE}/api/v1/agreement?api-platform_ph={quote(ph)}"
+    r = session.get(url, impersonate="chrome124")
+    if r.status_code != 200:
+        raise RuntimeError(f"agreement endpoint failed: {r.status_code} {r.text[:200]}")
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"agreement endpoint error code={data.get('code')}: {data.get('message', data)}")
+    print(f"✓ (code={data['code']})")
+
+    # 2. Check actual status via userProfile (agreement field)
+    print("  [5b] GET /api/v1/userProfile (check agreement)…", end=" ")
+    r = session.get(f"{MIMO_BASE}/api/v1/userProfile", impersonate="chrome124")
+    if r.status_code != 200:
+        raise RuntimeError(f"profile check failed: {r.status_code}")
+    profile = r.json().get("data", {})
+    agreed = profile.get("agreement", False)
+    if agreed:
+        print(f"✓ agreement=true")
+    else:
+        print(f"⚠ agreement=false (perlu accept manual via dashboard)")
+    return agreed
 
 
 def save_account_to_files(account: dict, profile: dict, api_key_data: dict = None) -> None:
@@ -181,7 +218,7 @@ def create_api_key(session, api_key_name: str = "mimo-register") -> dict:
     Note: MiMo requires `api-platform_ph` as QUERY PARAM (not cookie) for
     this endpoint. Server-side validation likely checks both.
     """
-    print(f"  [5/5] POST /api/v1/apiKeys (name={api_key_name!r})…", end=" ")
+    print(f"  [6/6] POST /api/v1/apiKeys (name={api_key_name!r})…", end=" ")
 
     # Extract api-platform_ph from session cookies
     jar = getattr(session.cookies, "jar", session.cookies)
@@ -256,7 +293,7 @@ def run(email: str = None, password: str = None,
     if account_file:
         account = load_account_file(account_file, account_row)
         email = account["email"]
-        print(f"[1/5] Skip register — pakai existing: {email} (from {account_file})")
+        print(f"[1/6] Skip register — pakai existing: {email} (from {account_file})")
         if not account.get("cookies", {}).get("passToken"):
             print("  ⚠ cookies kosong / tidak ada passToken — register ulang")
             password = password or account.get("password")
@@ -265,7 +302,7 @@ def run(email: str = None, password: str = None,
             account = register(email=email, password=password)
     elif email:
         password = password or None  # will use XIAOMI_PASSWORD env if None
-        print(f"[1/5] Register akun baru: {email}")
+        print(f"[1/6] Register akun baru: {email}")
         try:
             account = register(email=email, password=password)
         except RegisterError as e:
@@ -278,32 +315,40 @@ def run(email: str = None, password: str = None,
     print(f"  ✓ cookies: {list(account['cookies'].keys())}")
 
     # ── Step 2: Login pakai existing cookies (skip captcha) ─────────────
-    print(f"\n[2/5] Login pakai existing cookies")
+    print(f"\n[2/6] Login pakai existing cookies")
     login_data = login_with_cookies(account)
     print(f"  ✓ session ready (email={login_data['email']})")
 
     # ── Step 3: SSO ke MiMo ─────────────────────────────────────────────
-    print(f"\n[3/5] SSO ke platform.xiaomimimo.com")
+    print(f"\n[3/6] SSO ke platform.xiaomimimo.com")
     sso = sso_to_mimo(login_data)
     if not sso:
         raise RuntimeError("SSO failed (lihat output di atas untuk detail)")
     mimo_session = sso["session"]
 
     # ── Step 4: Load profile ────────────────────────────────────────────
-    print(f"\n[4/5] Load MiMo profile")
+    print(f"\n[4/6] Load MiMo profile")
     profile = load_profile(mimo_session)
 
     # ── Step 5 (optional): List / create API key ───────────────────────
     api_key_result = None
     if list_keys:
-        print(f"\n[5/5] List existing API keys")
+        print(f"\n[5/6] List existing API keys")
         keys = list_api_keys(mimo_session)
         api_key_result = {"existing": keys}
         for i, k in enumerate(keys, 1):
             print(f"  [{i}] {k.get('apiKeyName')}: id={k.get('id')} {k.get('redactedApiKey')}")
     elif api_key_name:
-        print(f"\n[5/5] Create API key")
-        api_key_result = create_api_key(mimo_session, api_key_name)
+        # Verify agreement dulu — kalau belum true, skip create API key
+        print(f"\n[5/6] Check agreement (prerequisite untuk API key)")
+        agreed = check_agreement(mimo_session)
+        if not agreed:
+            print(f"  ⚠ SKIP create API key — agreement belum di-accept")
+            print(f"     Login manual ke https://platform.xiaomimimo.com untuk accept")
+            api_key_result = None
+        else:
+            print(f"\n[6/6] Create API key")
+            api_key_result = create_api_key(mimo_session, api_key_name)
 
     # ── Summary ────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
