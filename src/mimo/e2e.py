@@ -208,23 +208,32 @@ def save_account_to_files(account: dict, profile: dict, api_key_data: dict = Non
 
     # ── accounts.txt : email|password|apikey per line ───────────────────
     txt_path = Path("accounts.txt")
+    txt_path_api_key_only = Path("accounts_api_key_only.txt")
+    # Create file jika belum ada
+    if not txt_path.exists():
+        txt_path.touch()
+    if not txt_path_api_key_only.exists():
+        txt_path_api_key_only.touch()
     # Read existing
-    if txt_path.exists():
-        lines = [l for l in txt_path.read_text().splitlines() if l.strip()]
-        # Replace kalau email sudah ada
-        lines = [l for l in lines if not l.startswith(account["email"] + "|")]
-    else:
-        lines = []
+    lines = [l for l in txt_path.read_text().splitlines() if l.strip()]
+    lines_api_key_only = [l for l in txt_path_api_key_only.read_text().splitlines() if l.strip()]
+    # Replace kalau email sudah ada
+    lines = [l for l in lines if not l.startswith(account["email"] + "|")]
     # Add new line
     api_key_str = api_key_data.get("apiKey", "") if api_key_data else "no-api-key-created"
     lines.append(f"{account['email']}|{account['password']}|{api_key_str}")
     txt_path.write_text("\n".join(lines) + "\n")
+    
+    lines_api_key_only.append(f"{api_key_str}")
+    txt_path_api_key_only.write_text("\n".join(lines_api_key_only) + "\n")
+
     try:
         txt_path.chmod(0o600)
+        txt_path_api_key_only.chmod(0o600)
     except Exception:
         pass
     print(f"  [saved] {txt_path} ({len(lines)} akun total)")
-
+    print(f"  [saved] {txt_path_api_key_only} ({len(lines_api_key_only)} akun total)")
 
 def list_api_keys(session) -> list[dict]:
     """GET /api/v1/apiKeys — list existing API keys."""

@@ -318,7 +318,7 @@ def run(
         # Delay ke akun berikutnya (kalau bukan yang terakhir)
         if i < total:
             delay = random.randint(delay_min, delay_max)
-            print(f"\n[sleep] {delay}s ({delay // 60}m{delay % 60}s) → next akun...")
+            print(f"\n[sleep] {delay}s → next akun...")
             time.sleep(delay)
 
     # ── Summary ────────────────────────────────────────────────────────
@@ -368,9 +368,9 @@ Contoh:
     )
     ap.add_argument("--count", type=int, default=1,
                     help="jumlah akun (default 1)")
-    ap.add_argument("--delay-min", type=int, default=300,
+    ap.add_argument("--delay-min", type=int, default=3,
                     help="delay minimum antar akun, detik (default 300 = 5min)")
-    ap.add_argument("--delay-max", type=int, default=900,
+    ap.add_argument("--delay-max", type=int, default=10,
                     help="delay maksimum antar akun, detik (default 900 = 15min)")
     ap.add_argument("--email-domain", default=None,
                     help="domain untuk generate email (default: dari EMAIL_DOMAIN env)")

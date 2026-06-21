@@ -145,9 +145,9 @@ def main():
 
     # Rate limiting
     rl = ap.add_argument_group("Rate limiting")
-    rl.add_argument("--delay-min", type=int, default=300,
+    rl.add_argument("--delay-min", type=int, default=3,
                    help="delay minimum antar akun (detik, default 300 = 5min)")
-    rl.add_argument("--delay-max", type=int, default=900,
+    rl.add_argument("--delay-max", type=int, default=10,
                    help="delay maksimum antar akun (detik, default 900 = 15min)")
     rl.add_argument("--max-retries", type=int, default=2,
                    help="retry per akun jika gagal (default 2)")
