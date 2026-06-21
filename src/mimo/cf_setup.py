@@ -191,12 +191,44 @@ def delete_rule(zone_id: str, auth: "CFAuth | str", rule_id: str) -> dict:
 
 
 def ensure_catch_all(zone_id: str, auth: "CFAuth | str", dest_email: str) -> dict:
-    """Idempotent: create catch-all rule kalau belum ada."""
+    """Idempotent: create catch-all rule kalau belum ada.
+
+    Self-healing: kalau ada rule tapi:
+      - disabled → enable
+      - action bukan 'forward' (mis. 'drop') → replace
+    """
     for rule in list_rules(zone_id, auth):
         matchers = rule.get("matchers", [])
         is_catchall = any(m.get("type") == "all" for m in matchers)
-        if is_catchall:
-            return rule  # already exists
+        if not is_catchall:
+            continue
+        # Check if rule is properly configured
+        actions = rule.get("actions", [])
+        is_forward = any(
+            a.get("type") == "forward" and dest_email in a.get("value", [])
+            for a in actions
+        )
+        is_enabled = rule.get("enabled", False)
+        if is_forward and is_enabled:
+            return rule  # already correct
+        # Need to fix
+        rule_id = rule["id"]
+        if not is_forward:
+            print(f"  ⚠ catch-all rule id={rule_id} has wrong action, replacing...")
+            delete_rule(zone_id, auth, rule_id)
+            break  # fall through to create
+        if not is_enabled:
+            print(f"  ⚠ catch-all rule id={rule_id} disabled, re-enabling...")
+            update_rule(
+                zone_id, auth, rule_id,
+                name=rule.get("name", "Catch-all to Gmail"),
+                matchers=[{"type": "all"}],
+                actions=[{"type": "forward", "value": [dest_email]}],
+                enabled=True,
+                priority=0,
+            )
+            return update_rule_result(zone_id, auth, rule_id)
+    # Create new
     return create_rule(
         zone_id, auth,
         name="Catch-all to Gmail",
@@ -205,6 +237,32 @@ def ensure_catch_all(zone_id: str, auth: "CFAuth | str", dest_email: str) -> dic
         enabled=True,
         priority=0,
     )
+
+
+def update_rule(zone_id: str, auth: "CFAuth | str", rule_id: str, *,
+                name: str, matchers: list[dict], actions: list[dict],
+                enabled: bool = True, priority: int = 0) -> dict:
+    """Update existing routing rule."""
+    url = f"{CF_API_BASE}/zones/{zone_id}/email/routing/rules/{rule_id}"
+    payload = {
+        "name": name,
+        "enabled": enabled,
+        "priority": priority,
+        "matchers": matchers,
+        "actions": actions,
+    }
+    data = _request("PUT", url, auth, json=payload)
+    if not data.get("success"):
+        raise RuntimeError(f"update_rule failed: {data.get('errors')}")
+    return data["result"]
+
+
+def update_rule_result(zone_id: str, auth: "CFAuth | str", rule_id: str) -> dict:
+    """Re-fetch rule setelah update untuk return fresh data."""
+    for r in list_rules(zone_id, auth):
+        if r["id"] == rule_id:
+            return r
+    raise RuntimeError(f"rule {rule_id} not found after update")
 
 
 # ── Zone / Account lookup ───────────────────────────────────────────────────

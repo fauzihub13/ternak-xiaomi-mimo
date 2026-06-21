@@ -24,26 +24,46 @@ def gen_random_tag(n: int = 8) -> str:
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
 
-def test_dns(domain: str) -> bool:
-    """Cek MX record domain harus point ke cloudflare.net."""
-    import subprocess
+def test_dns(domain: str) -> bool | None:
+    """Cek MX record domain harus point ke cloudflare.net.
+
+    Returns:
+        True  → MX record found & points to cloudflare.net
+        False → MX record missing or wrong target
+        None  → could not check (no dig/socket/etc)
+    """
+    # Try dig first (works on most Unix systems)
     try:
+        import subprocess
         result = subprocess.run(
             ["dig", "+short", "MX", domain],
             capture_output=True, text=True, timeout=10,
         )
         mx_records = result.stdout.strip()
-        print(f"  MX records untuk {domain}:")
-        for line in mx_records.splitlines():
-            print(f"    {line}")
-        if "cloudflare.net" in mx_records:
-            print("  ✓ MX record point ke Cloudflare")
-            return True
-        print("  ✗ MX record BUKAN ke Cloudflare!")
-        return False
+        if mx_records:
+            print(f"  MX records untuk {domain}:")
+            for line in mx_records.splitlines():
+                print(f"    {line}")
+            if "cloudflare.net" in mx_records:
+                print("  ✓ MX record point ke Cloudflare")
+                return True
+            print("  ✗ MX record BUKAN ke Cloudflare!")
+            return False
     except FileNotFoundError:
-        print("  ⚠ `dig` tidak tersedia. Install dengan `brew install bind` atau pakai nslookup.")
+        pass  # dig not available, try fallback
+    except Exception as e:
+        print(f"  ⚠ dig error: {e}")
+
+    # Fallback: socket.getaddrinfo (resolves A record, not MX — best effort)
+    try:
+        import socket
+        socket.getaddrinfo(domain, None)
+        print(f"  ⚠ domain {domain} resolves (tapi MX record tidak bisa dicek tanpa 'dig')")
+        print(f"    Install 'bind-utils' (Linux) atau 'bind' (macOS: brew install bind) untuk full check")
         return None
+    except Exception as e:
+        print(f"  ✗ domain {domain} tidak resolve: {e}")
+        return False
 
 
 def send_test_email(domain: str, sender: str, sender_pass: str) -> str:
@@ -82,9 +102,21 @@ def poll_imap_for_tag(imap_user: str, imap_pass: str, tag: str,
             _, data = imap.search(None, f'(SUBJECT "Cloudflare Routing Test {tag}")')
             ids = data[0].split()
             if ids:
-                print(f"  ✓ email ditemukan (ID: {ids[0]})")
+                print(f"  ✓ email ditemukan di INBOX (ID: {ids[0]})")
                 imap.logout()
                 return True
+            # Also check Spam folder (Gmail specific)
+            try:
+                imap.select('[Gmail]/Spam')
+                _, data = imap.search(None, f'(SUBJECT "Cloudflare Routing Test {tag}")')
+                spam_ids = data[0].split()
+                if spam_ids:
+                    print(f"  ✓ email ditemukan di SPAM (ID: {spam_ids[0]})")
+                    print(f"     → cek Spam folder Gmail, tandai 'Not spam'")
+                    imap.logout()
+                    return True
+            except Exception:
+                pass  # folder tidak ada
             imap.logout()
         except Exception as e:
             print(f"  IMAP error: {e}")
@@ -99,7 +131,8 @@ def main():
     domain = os.getenv("TEST_DOMAIN", "")
     imap_user = os.getenv("IMAP_USER", "")
     imap_pass = os.getenv("IMAP_PASS", "")
-    sender_pass = os.getenv("TEST_SENDER_PASS", imap_pass)  # default: same as IMAP
+    # Fix: empty string dari .env harus fallback ke IMAP_PASS
+    sender_pass = os.getenv("TEST_SENDER_PASS") or imap_pass
 
     if not domain:
         print("Set TEST_DOMAIN=<yourdomain.com> di .env")

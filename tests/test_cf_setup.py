@@ -181,10 +181,50 @@ def test_create_rule(monkeypatch):
 
 # ── ensure_catch_all ────────────────────────────────────────────────────────
 def test_ensure_catch_all_existing(monkeypatch):
+    """Catch-all exists with correct forward action + enabled → return as-is."""
     monkeypatch.setattr("mimo.cf_setup.list_rules",
-                       lambda *a, **kw: [{"id": "r1", "matchers": [{"type": "all"}]}])
+                       lambda *a, **kw: [{"id": "r1",
+                                          "matchers": [{"type": "all"}],
+                                          "actions": [{"type": "forward",
+                                                       "value": ["a@x.com"]}],
+                                          "enabled": True}])
     rule = cf_setup.ensure_catch_all("zone", "tok", "a@x.com")
     assert rule["id"] == "r1"  # not created
+
+
+def test_ensure_catch_all_wrong_action(monkeypatch):
+    """Catch-all exists but action is wrong (e.g. drop) → replace."""
+    monkeypatch.setattr("mimo.cf_setup.list_rules",
+                       lambda *a, **kw: [{"id": "r1",
+                                          "matchers": [{"type": "all"}],
+                                          "actions": [{"type": "drop"}],
+                                          "enabled": False}])
+    monkeypatch.setattr("mimo.cf_setup.delete_rule",
+                       lambda *a, **kw: {"success": True})
+    monkeypatch.setattr("mimo.cf_setup.create_rule",
+                       lambda *a, **kw: {"id": "r_new",
+                                          "name": "Catch-all"})
+    rule = cf_setup.ensure_catch_all("zone", "tok", "a@x.com")
+    assert rule["id"] == "r_new"
+
+
+def test_ensure_catch_all_disabled(monkeypatch):
+    """Catch-all exists, correct action, but disabled → re-enable."""
+    monkeypatch.setattr("mimo.cf_setup.list_rules",
+                       lambda *a, **kw: [{"id": "r1",
+                                          "matchers": [{"type": "all"}],
+                                          "actions": [{"type": "forward",
+                                                       "value": ["a@x.com"]}],
+                                          "enabled": False}])
+    monkeypatch.setattr("mimo.cf_setup.update_rule",
+                       lambda *a, **kw: {"id": "r1", "enabled": True})
+    monkeypatch.setattr("mimo.cf_setup.list_rules",
+                       lambda *a, **kw: [{"id": "r1", "enabled": True,
+                                          "matchers": [{"type": "all"}],
+                                          "actions": [{"type": "forward",
+                                                       "value": ["a@x.com"]}]}])
+    rule = cf_setup.ensure_catch_all("zone", "tok", "a@x.com")
+    assert rule["enabled"] is True
 
 
 def test_ensure_catch_all_creates_new(monkeypatch):
