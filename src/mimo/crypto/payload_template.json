@@ -1,0 +1,96 @@
+{
+  "type": 0,
+  "startTs": 1780984108989,
+  "endTs": 1780984109775,
+  "env": {
+    "p1": "0.1",
+    "p2": "pc-Chrome148",
+    "p3": "Linux x86_64",
+    "p4": "Gecko",
+    "p5": "en-US",
+    "p6": "Netscape",
+    "p7": "Mozilla",
+    "p8": true,
+    "p9": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+    "p10": 0,
+    "p11": 1780984108989,
+    "p12": 1280,
+    "p13": 800,
+    "p14": 1280,
+    "p15": 800,
+    "p16": 1280,
+    "p17": 800,
+    "p18": "https://global.account.xiaomi.com/fe/service/register?_locale=en_US&_uRegion=ID",
+    "p19": 5,
+    "p20": "b61165d7c387d373f59d977af2b3c5a090f61907",
+    "p21": "Pd369809e2cf9b3e61d61254f48e6a98e6abe02ed,Cf5de68f67482549f612c4c553c1a8d44de2fd042,M0c8ad6916ae9493e506332df0ddbf245659ad2de,W26c61e60e6329023c3daad583513d7c4e6331c3a",
+    "p22": 0,
+    "p23": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+    "p24": "",
+    "p25": "79c0c1eb2748f583a66ce654b4dc1685157963f8",
+    "p26": "fbe83d766a4229e366d48d0096d8e26aaf852730",
+    "p28": "",
+    "p29": 107,
+    "p30": 10,
+    "p31": 10,
+    "p32": "0.73",
+    "p33": [
+      "webdriver"
+    ],
+    "p34": "https://global.account.xiaomi.com/fe/service/register?_locale=en_US&_uRegion=ID"
+  },
+  "action": {
+    "a1": [
+      1280,
+      800
+    ],
+    "a2": [],
+    "a3": [
+      [
+        657,
+        599,
+        99
+      ],
+      [
+        827,
+        702,
+        690
+      ]
+    ],
+    "a4": [],
+    "a5": [
+      [
+        657,
+        599,
+        83
+      ],
+      [
+        827,
+        702,
+        685
+      ]
+    ],
+    "a6": [],
+    "a7": [],
+    "a8": [
+      99
+    ],
+    "a9": [
+      98,
+      689
+    ],
+    "a10": [],
+    "a11": [],
+    "a12": [],
+    "a13": [],
+    "a14": []
+  },
+  "force": true,
+  "talkBack": false,
+  "nonce": {
+    "t": 1780984109,
+    "r": 2140978453
+  },
+  "version": "2.0",
+  "scene": "register"
+}

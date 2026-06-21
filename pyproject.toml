@@ -1,0 +1,42 @@
+[project]
+name = "mimo-register"
+version = "0.1.0"
+description = "Xiaomi account registration & MiMo automation (browserless, CapSolver)"
+requires-python = ">=3.10"
+dependencies = [
+    "curl_cffi>=0.7.0",
+    "pycryptodome>=3.19.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+node = [
+    # Node.js (v18+) digunakan untuk encrypt.cjs yang identik dengan frontend Xiaomi.
+    # Tidak wajib — Python fallback sudah diimplementasi.
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-mock>=3.11",
+    "respx>=0.21",   # mock httpx / curl_cffi
+]
+
+[project.scripts]
+mimo-register = "mimo.register:register"
+mimo-encrypt = "mimo.cli_encrypt:main"
+mimo-batch = "mimo.batch:main"
+mimo-setup-test = "mimo.setup_test:main"
+mimo-bot = "mimo.bot:main"
+mimo-refresh = "mimo.refresh:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mimo = ["crypto/encrypt.cjs", "crypto/payload_template.json"]
