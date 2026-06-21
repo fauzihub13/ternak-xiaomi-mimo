@@ -64,6 +64,8 @@ accounts.txt
 accounts_api_key_only.txt
 bulk_run.log.jsonl
 bulk_run.log*.jsonl
+bulk_mt_run.log.jsonl
+bulk_mt_run.log*.jsonl
 *.log
 
 # ─── Reference captures (HAR + HTML dari browser asli, besar) ──────────────
