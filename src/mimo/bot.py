@@ -158,20 +158,33 @@ def solve_captcha_capsolver(e_token: str, website_url: str = LOGIN_PAGE,
 # Captcha flow (diperlukan kalau login / SSO muncul captcha)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def handle_captcha(session: cffi_requests.Session) -> str | None:
+def handle_captcha(session: cffi_requests.Session, *,
+                   action: str = "login",
+                   referer_url: str = LOGIN_PAGE) -> str | None:
     """Solve captcha & set vToken cookie di session.
-    Returns vToken string or None kalau gagal.
-    """
-    step("Initiating captcha challenge...")
 
-    s, d = encrypt_captcha_payload(build_fingerprint_payload())
+    Args:
+        action: "login" atau "register" — determines Xiaomi's captcha action
+                identifier (server validates against this). Login flow HAR
+                uses 'login', register flow HAR uses 'register'.
+        referer_url: URL of the page triggering the captcha. Sent as p18/p34
+                     in fingerprint payload (Xiaomi validates referer consistency).
+    Returns:
+        vToken string or None kalau gagal.
+    """
+    step(f"Initiating captcha challenge (action={action})…")
+
+    s, d = encrypt_captcha_payload(
+        build_fingerprint_payload(scene=action, referer_url=referer_url)
+    )
     ts = int(time.time() * 1000)
     url = CAPTCHA_DATA_TPL.format(ts=ts)
 
     e_token = None
     try:
         resp = session.post(
-            url, data=f"s={urllib.parse.quote(s)}&d={urllib.parse.quote(d)}&a=register",
+            url,
+            data=f"s={urllib.parse.quote(s)}&d={urllib.parse.quote(d)}&a={action}",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         data = resp.json()
@@ -219,6 +232,33 @@ def handle_captcha(session: cffi_requests.Session) -> str | None:
 # Login Xiaomi
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def login_with_cookies(account: dict) -> dict | None:
+    """Use existing Xiaomi cookies (dari register) to skip login + captcha.
+
+    Returns dict with session populated + cookies, atau None kalau cookies invalid.
+    """
+    if dry_run := False:
+        pass  # never dry-run here
+    step(f"Login via existing cookies: {account.get('email')}")
+    cookies = account.get("cookies", {})
+    if not cookies or "passToken" not in cookies:
+        err("no cookies / no passToken in account")
+        return None
+
+    session = make_session()
+    session.headers.update({
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Origin": "https://account.xiaomi.com",
+        "Referer": LOGIN_PAGE,
+    })
+    # Inject cookies
+    for name, value in cookies.items():
+        if not value:
+            continue
+        session.cookies.set(name, value, domain=".xiaomi.com")
+    return _login_result(account["email"], cookies, None, session)
+
+
 def login_xiaomi(email: str, password: str, *, max_captcha_retries: int = 4,
                  dry_run: bool = False) -> dict | None:
     """Login ke account.xiaomi.com.
@@ -249,7 +289,7 @@ def login_xiaomi(email: str, password: str, *, max_captcha_retries: int = 4,
     def do_login(capt_code: str = "") -> cffi_requests.Response:
         data = {
             "sid": "api-platform",
-            "callback": "https://account.xiaomi.com",
+            "callback": "",   # empty — Xiaomi rejects invalid callback with code 10025
             "qs": "%3Fsid%3Dpassport",
             "serviceParam": "",
             "_sign": "",
@@ -277,14 +317,14 @@ def login_xiaomi(email: str, password: str, *, max_captcha_retries: int = 4,
 
     if code == 0 or location:
         ok(f"login success (code={code})")
-        cookies = {c.name: c.value for c in session.cookies}
+        cookies = {c.name: c.value for c in getattr(session.cookies, "jar", session.cookies)}
         return _login_result(email, cookies, location, session)
 
     # If captcha required
     if code in (70016, 87001):
         warn(f"captcha required (code={code})")
         for attempt in range(max_captcha_retries):
-            v_token = handle_captcha(session)
+            v_token = handle_captcha(session, action="login")
             if not v_token:
                 time.sleep(3)
                 continue
@@ -303,7 +343,7 @@ def login_xiaomi(email: str, password: str, *, max_captcha_retries: int = 4,
             location = result.get("location")
             if code == 0 or location:
                 ok("login success after captcha")
-                cookies = {c.name: c.value for c in session.cookies}
+                cookies = {c.name: c.value for c in getattr(session.cookies, "jar", session.cookies)}
                 return _login_result(email, cookies, location, session)
         err("login failed after all captcha retries")
         return None
@@ -336,6 +376,9 @@ def _login_result(email: str, cookies: dict, location: str | None,
 def sso_to_mimo(login_data: dict, dry_run: bool = False) -> dict | None:
     """Follow OAuth redirect: account.xiaomi.com → /sts → platform.xiaomimimo.com.
 
+    Key insight: MiMo API returns 401 with `loginUrl` (signed by Xiaomi) kalau
+    session belum ada. Kita pakai loginUrl itu untuk inisiasi SSO flow.
+
     Returns {session, cookies} atau None.
     """
     if dry_run:
@@ -350,28 +393,87 @@ def sso_to_mimo(login_data: dict, dry_run: bool = False) -> dict | None:
 
     # Inject Xiaomi login cookies
     for name, value in (login_data.get("cookies") or {}).items():
+        if not value:
+            continue
         session.cookies.set(name, value, domain=".xiaomi.com")
     for key in ("passToken", "serviceToken", "userId", "cUserId"):
         val = login_data.get(key, "")
         if val:
             session.cookies.set(key, val, domain=".xiaomi.com")
 
-    sts_url = f"{MIMO_BASE}/"
-    sso_url = f"{SSO_LOGIN_URL}?callback={urllib.parse.quote(sts_url, safe='')}&sid=api-platform"
+    # 1. Hit MiMo API — 401 dengan loginUrl yang sudah ditandatangani Xiaomi
     try:
-        resp = session.get(sso_url, impersonate=IMPERSONATE, allow_redirects=True)
-        info(f"SSO redirects: {len(resp.history)} → {resp.status_code}")
+        resp = session.post(
+            f"{MIMO_BASE}/api/v1/auth/login",
+            json={"account": login_data["email"]},
+            impersonate=IMPERSONATE,
+        )
+        if resp.status_code != 401:
+            err(f"unexpected status from MiMo: {resp.status_code} — {resp.text[:200]}")
+        data = resp.json() if resp.text else {}
+        login_url = data.get("loginUrl", "")
+        if not login_url:
+            err(f"no loginUrl in 401 response: {resp.text[:200]}")
+            return None
+        info(f"got loginUrl from MiMo 401")
+    except Exception as e:
+        err(f"MiMo auth probe failed: {e}")
+        return None
+
+    # 2. Manual follow redirect chain: loginUrl → serviceLogin → MiMo STS → /auth/login
+    user_id = None
+    try:
+        resp = session.get(login_url, impersonate=IMPERSONATE, allow_redirects=False)
+        info(f"SSO step 1: {resp.status_code} → {resp.headers.get('Location', '?')[:80]}")
+        redirects = 0
+        while resp.status_code in (301, 302, 303, 307, 308) and redirects < 5:
+            loc = resp.headers.get("Location")
+            if not loc:
+                break
+            if loc.startswith("/"):
+                from urllib.parse import urlparse, urlunparse
+                parsed = urlparse(resp.url)
+                loc = urlunparse((parsed.scheme, parsed.netloc, loc, "", "", ""))
+            resp = session.get(loc, impersonate=IMPERSONATE, allow_redirects=False)
+            redirects += 1
+            info(f"SSO step {redirects + 1}: {resp.status_code} → {resp.headers.get('Location', '?')[:80]}")
+        info(f"SSO ended: {resp.status_code} {resp.url[:80]} after {redirects} redirects")
+
+        # Extract userId from final URL
+        m = re.search(r"userId=(\d+)", resp.url)
+        if m:
+            user_id = m.group(1)
+            info(f"extracted userId: {user_id}")
+
+        # 3. POST /auth/login untuk aktivasi MiMo session token
+        if user_id and "auth/login" in resp.url:
+            final_url = resp.url
+            login_resp = session.post(
+                final_url,
+                json={"userId": user_id},
+                impersonate=IMPERSONATE,
+            )
+            info(f"POST /auth/login: {login_resp.status_code}")
+            if login_resp.status_code == 200:
+                ok("MiMo session activated")
+            else:
+                warn(f"MiMo activate: {login_resp.status_code} {login_resp.text[:200]}")
     except Exception as e:
         err(f"SSO failed: {e}")
         return None
 
-    mimo_cookies = {c.name: c.value for c in session.cookies}
+    # 3. curl_cffi iterates session.cookies as strings; use .jar for Cookie objects
+    cookie_jar = getattr(session.cookies, "jar", session.cookies)
+    mimo_cookies = {c.name: c.value for c in cookie_jar}
     ph = mimo_cookies.get("api-platform_ph", "")
     st = mimo_cookies.get("api-platform_serviceToken", "")
     if ph or st:
         ok(f"MiMo session (ph={ph[:20]}..., serviceToken={st[:20]}...)")
     else:
-        warn(f"no api-platform cookies — {list(mimo_cookies.keys())}")
+        warn(f"no api-platform cookies — got: {list(mimo_cookies.keys())}")
+        for k in mimo_cookies:
+            if "platform" in k.lower() or "service" in k.lower() or "ph" in k.lower():
+                info(f"  candidate: {k}={mimo_cookies[k][:20]}")
 
     return {"session": session, "cookies": mimo_cookies}
 
@@ -486,7 +588,15 @@ def run(email: str, password: str, *,
         name: str = "", phone: str = "",
         company: str = "", industry: str = "",
         scenario: str = "", additional_info: str = "",
-        dry_run: bool = False) -> dict:
+        dry_run: bool = False,
+        existing_cookies: dict | None = None) -> dict:
+    """Run full MiMo flow.
+
+    Args:
+        email, password: Xiaomi account credentials.
+        existing_cookies: dict dari register.json output (passToken, serviceToken, ...).
+                         Kalau ada, skip login+captcha, langsung ke SSO.
+    """
     result = {
         "email": email,
         "login": False, "sso": False, "referral": False, "ultraspeed": False,
@@ -494,7 +604,14 @@ def run(email: str, password: str, *,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     try:
-        login_data = login_xiaomi(email, password, dry_run=dry_run)
+        # Try login via existing cookies first (no captcha needed)
+        if existing_cookies and existing_cookies.get("passToken"):
+            login_data = login_with_cookies({"email": email, "cookies": existing_cookies})
+            if not login_data:
+                warn("login with existing cookies failed, falling back to fresh login + captcha")
+                login_data = login_xiaomi(email, password, dry_run=dry_run)
+        else:
+            login_data = login_xiaomi(email, password, dry_run=dry_run)
         if not login_data:
             result["error"] = "login failed"
             return result
@@ -558,10 +675,12 @@ def main():
     args = ap.parse_args()
 
     # Load credentials
+    existing_cookies = None
     if args.account:
         acc = load_account(args.account, args.row)
         email = acc["email"]
         password = acc["password"]
+        existing_cookies = acc.get("cookies", {})
     elif args.email and args.password:
         email = args.email
         password = args.password
@@ -573,6 +692,8 @@ def main():
     info(f"Referral: {args.referral or '(none)'}")
     info(f"CapSolver: {'configured' if CAPSOLVER_API_KEY else 'NOT SET'}")
     info(f"Proxy:    {PROXY_URL if USE_PROXY else '(none)'}")
+    if existing_cookies and existing_cookies.get("passToken"):
+        info(f"Cookies:  using existing passToken (skip captcha)")
     if args.dry_run:
         warn("DRY RUN — no actual actions")
     print()
@@ -584,6 +705,7 @@ def main():
         company=args.company, industry=args.industry,
         scenario=args.scenario, additional_info=args.additional_info,
         dry_run=args.dry_run,
+        existing_cookies=existing_cookies,
     )
 
     # Summary

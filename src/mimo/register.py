@@ -139,8 +139,16 @@ def encrypt_form_fields(fields: dict) -> dict:
 
 
 # ─── FINGERPRINT PAYLOAD (template dari upstream) ────────────────────────────
-def build_fingerprint_payload(template: dict | None = None) -> dict:
-    """Refresh timestamp/nonce fields dari template, return ready-to-encrypt payload."""
+def build_fingerprint_payload(template: dict | None = None, *,
+                              scene: str = "register",
+                              referer_url: str | None = None) -> dict:
+    """Refresh timestamp/nonce fields dari template, return ready-to-encrypt payload.
+
+    Args:
+        template: full template (defaults to bundled payload_template.json)
+        scene: "register" atau "login" — Xiaomi validates this against the page URL
+        referer_url: overrides env.p18 and env.p34 (URL of the page doing the captcha)
+    """
     if template is None:
         template_path = Path(__file__).parent / "crypto" / "payload_template.json"
         if template_path.exists():
@@ -154,6 +162,11 @@ def build_fingerprint_payload(template: dict | None = None) -> dict:
     template["env"]["p33"] = []  # no webdriver flag
     template["nonce"]["t"] = int(now_ms / 1000)
     template["nonce"]["r"] = random.randint(1_000_000_000, 9_999_999_999)
+    # Override scene + referer URL for login/register differentiation
+    template["scene"] = scene
+    if referer_url:
+        template["env"]["p18"] = referer_url
+        template["env"]["p34"] = referer_url
     return template
 
 
