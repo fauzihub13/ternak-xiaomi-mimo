@@ -12,6 +12,9 @@ Flow:
 
 import argparse
 import json
+import os
+import random
+import string
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -28,6 +31,31 @@ from .bot import (
 from curl_cffi import requests as cffi_requests
 
 load_dotenv()
+
+
+def _generate_email() -> str | None:
+    """Generate random email untuk catch-all domain dari `EMAIL_DOMAIN` env.
+
+    Format: <10-char-random-alnum>@<domain>
+    Returns None kalau EMAIL_DOMAIN tidak di-set.
+    """
+    domain = os.getenv("EMAIL_DOMAIN", "").strip()
+    if not domain:
+        return None
+    # Strip protocol kalau ada
+    domain = domain.replace("https://", "").replace("http://", "").strip("/")
+    local = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    return f"{local}@{domain}"
+
+
+def _default_password() -> str:
+    """Password dari `XIAOMI_PASSWORD` env, atau generate random."""
+    pw = os.getenv("XIAOMI_PASSWORD", "").strip()
+    if pw:
+        return pw
+    # Random fallback
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    return "".join(random.choices(chars, k=18))
 
 
 def load_account_file(path: str, row: int = 0) -> dict:
@@ -271,19 +299,47 @@ def create_api_key(session, api_key_name: str = "mimo-register") -> dict:
 
 def run(email: str = None, password: str = None,
         account_file: str = None, account_row: int = 0,
-        api_key_name: str = None, list_keys: bool = False) -> dict:
+        api_key_name: str = None, list_keys: bool = False,
+        create_key: bool = True) -> dict:
     """End-to-end: register / use existing → SSO → MiMo profile → API key.
 
     Args:
-        email: kalau diisi, register akun baru dengan email ini
-        password: password untuk register baru
+        email: kalau diisi, register akun baru dengan email ini.
+               Kalau None, generate dari `EMAIL_DOMAIN` env.
+        password: kalau diisi, password untuk register.
+                  Kalau None, baca dari `XIAOMI_PASSWORD` env (atau random).
         account_file: kalau diisi, pakai akun dari JSON/JSONL file (skip register)
         account_row: row index di file
-        api_key_name: kalau diisi, create API key dengan nama ini setelah SSO
+        api_key_name: kalau diisi, create API key dengan nama ini.
+                      Kalau None, baca dari `API_KEY_NAME` env.
         list_keys: kalau True, list existing API keys (skip create)
+        create_key: kalau False, skip API key creation sama sekali
+                    (default True supaya full pipeline otomatis)
 
     Returns dict dengan {email, cookies, profile, api_key?, status}
     """
+    # ── Resolve defaults dari env ─────────────────────────────────────
+    if email is None and account_file is None:
+        email = _generate_email()
+        if email:
+            print(f"[auto-email] {email}  (dari EMAIL_DOMAIN env)")
+        else:
+            raise RuntimeError(
+                "tidak ada --email/--account, dan EMAIL_DOMAIN env tidak diset. "
+                "Set EMAIL_DOMAIN=mimo.domain-anda.com di .env untuk auto-generate, "
+                "atau pakai --email X / --account FILE"
+            )
+    if password is None and account_file is None:
+        password = _default_password()
+        env_pw = os.getenv("XIAOMI_PASSWORD", "")
+        if env_pw:
+            print(f"[auto-password] dari XIAOMI_PASSWORD env")
+        else:
+            print(f"[auto-password] generated random (tidak ada di env)")
+    if api_key_name is None and not list_keys and create_key:
+        api_key_name = os.getenv("API_KEY_NAME", "").strip() or "mimo-register"
+        print(f"[auto-api-key-name] {api_key_name}")
+
     print("=" * 60)
     print(f"E2E: register → SSO → MiMo profile (→ API key?)")
     print("=" * 60)
@@ -338,7 +394,7 @@ def run(email: str = None, password: str = None,
         api_key_result = {"existing": keys}
         for i, k in enumerate(keys, 1):
             print(f"  [{i}] {k.get('apiKeyName')}: id={k.get('id')} {k.get('redactedApiKey')}")
-    elif api_key_name:
+    elif api_key_name and create_key:
         # Verify agreement dulu — kalau belum true, skip create API key
         print(f"\n[5/6] Check agreement (prerequisite untuk API key)")
         agreed = check_agreement(mimo_session)
@@ -349,6 +405,11 @@ def run(email: str = None, password: str = None,
         else:
             print(f"\n[6/6] Create API key")
             api_key_result = create_api_key(mimo_session, api_key_name)
+    else:
+        if not create_key:
+            print(f"\n[5/6] Skip API key creation (--no-api-key)")
+        else:
+            print(f"\n[5/6] Skip API key creation (no --api-key-name, --list-api-keys, atau API_KEY_NAME env)")
 
     # ── Summary ────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
@@ -386,26 +447,56 @@ def run(email: str = None, password: str = None,
 
 def main():
     ap = argparse.ArgumentParser(
-        description="End-to-end: register → SSO → MiMo profile (→ API key)",
+        description="End-to-end: register → SSO → MiMo profile (→ API key). "
+                    "Defaults dibaca dari env (EMAIL_DOMAIN, XIAOMI_PASSWORD, API_KEY_NAME).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Contoh:
+  # Pakai defaults dari env (zero CLI args):
+  python -m mimo.e2e
+
+  # Custom email + default password/api-key:
+  python -m mimo.e2e --email custom@domain.com
+
+  # Pakai existing account + create API key:
+  python -m mimo.e2e --account xiaomi_account.json --api-key-name "key-v2"
+
+  # List existing API keys:
+  python -m mimo.e2e --account xiaomi_account.json --list-api-keys
+
+Env vars yang dipakai sebagai default:
+  EMAIL_DOMAIN     → auto-generate email <random>@<domain>
+  XIAOMI_PASSWORD  → password untuk register (kalau tidak di-override)
+  API_KEY_NAME     → nama API key yang di-create
+        """,
     )
-    ap.add_argument("--email", help="email untuk register baru")
-    ap.add_argument("--password", help="password untuk register baru")
-    ap.add_argument("--account", help="JSON/JSONL file (output batch/register)")
-    ap.add_argument("--row", type=int, default=0, help="row index di file")
+    ap.add_argument("--email",
+                    help="email untuk register baru (default: auto-generate dari EMAIL_DOMAIN env)")
+    ap.add_argument("--password",
+                    help="password untuk register baru (default: dari XIAOMI_PASSWORD env)")
+    ap.add_argument("--account",
+                    help="JSON/JSONL file (skip register, pakai existing)")
+    ap.add_argument("--row", type=int, default=0, help="row index di file (default 0)")
     ap.add_argument("--api-key-name", default=None,
-                    help="create API key dengan nama ini setelah SSO")
+                    help="nama API key (default: dari API_KEY_NAME env, atau 'mimo-register')")
     ap.add_argument("--list-api-keys", action="store_true",
                     help="list existing API keys (skip create)")
+    ap.add_argument("--no-api-key", action="store_true",
+                    help="skip API key creation sama sekali")
     args = ap.parse_args()
 
+    # Validate: minimal satu mode (account atau email)
     if not args.account and not args.email:
-        ap.error("provide --email + --password, OR --account <file>")
+        # Boleh: pakai env defaults kalau EMAIL_DOMAIN diset
+        if not os.getenv("EMAIL_DOMAIN", "").strip():
+            ap.error("provide --email, --account, OR set EMAIL_DOMAIN env")
 
     try:
         run(email=args.email, password=args.password,
             account_file=args.account, account_row=args.row,
             api_key_name=args.api_key_name,
-            list_keys=args.list_api_keys)
+            list_keys=args.list_api_keys,
+            create_key=not args.no_api_key)
     except Exception as e:
         print(f"\n[FAIL] {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
